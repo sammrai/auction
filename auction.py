@@ -960,330 +960,449 @@ class YahooAuctionTrade():
     
 
 
-def get_matome_imgids(cookies: dict, original_url: str, ):
-    """
-    Replace `/seller/top` in the URL with `/bundle/list` and make a GET request.
+    def get_matome_imgids(self, original_url: str, ):
+        """
+        Replace `/seller/top` in the URL with `/bundle/list` and make a GET request.
 
-    Args:
-        original_url (str): The original URL containing `/seller/top`.
-        cookies (dict): Cookies to include in the request.
+        Args:
+            original_url (str): The original URL containing `/seller/top`.
+            cookies (dict): Cookies to include in the request.
 
-    Returns:
-        Response: The response object from the GET request.
-    """
-    # Parse the URL
-    parsed_url = urlparse(original_url)
+        Returns:
+            Response: The response object from the GET request.
+        """
+        # Parse the URL
+        parsed_url = urlparse(original_url)
 
-    # Replace `/seller/top` with `/bundle/list`
-    new_path = parsed_url.path.replace('/seller/top', '/bundle/list')
+        # Replace `/seller/top` with `/bundle/list`
+        new_path = parsed_url.path.replace('/seller/top', '/bundle/list')
 
-    # Create the new URL
-    new_url = urlunparse(
-        ParseResult(
-            scheme=parsed_url.scheme,
-            netloc=parsed_url.netloc,
-            path=new_path,
-            params=parsed_url.params,
-            query=parsed_url.query,
-            fragment=parsed_url.fragment
+        # Create the new URL
+        new_url = urlunparse(
+            ParseResult(
+                scheme=parsed_url.scheme,
+                netloc=parsed_url.netloc,
+                path=new_path,
+                params=parsed_url.params,
+                query=parsed_url.query,
+                fragment=parsed_url.fragment
+            )
         )
-    )
 
-    headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "cache-control": "no-cache",
-        "pragma": "no-cache",
-        "priority": "u=0, i",
-        "referer": original_url,
-        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        "sec-ch-ua-arch": '"arm"',
-        "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-model": '""',
-        "sec-ch-ua-platform": '"macOS"',
-        "sec-ch-ua-platform-version": '"15.1.1"',
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-user": "?1",
-        "upgrade-insecure-requests": "1",
-        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    }
+        headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "referer": original_url,
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-arch": '"arm"',
+            "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-model": '""',
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-ch-ua-platform-version": '"15.1.1"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        }
 
-    # Make the GET request
-    r = requests.get(new_url, headers=headers, cookies=cookies)
-    soup = BeautifulSoup(r.text, "html.parser")
-    dom = etree.HTML(str(soup))
-    elements = dom.xpath('//*[@class="decItmName"]//a')
-    ids = [productname_to_imgid(element.text) for element in elements]
-    return ids
-
+        # Make the GET request
+        r = self.session.get(new_url, headers=headers)
+        soup = BeautifulSoup(r.text, "html.parser")
+        dom = etree.HTML(str(soup))
+        elements = dom.xpath('//*[@class="decItmName"]//a')
+        ids = [productname_to_imgid(element.text) for element in elements]
+        return ids
 
 
+    def get_ship_preview(self, url):
+        """
+        URLからRefererヘッダーを作成し、GETリクエストを送信します。
+
+        Args:
+            cookies (dict): リクエストに使用するクッキー情報。
+            url (str): リクエスト先のURL。
+
+        Returns:
+            requests.Response: GETリクエストのレスポンスオブジェクト。
+        """
+        assert isinstance(url, str)
+        # URLを解析してRefererを作成
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        
+        referer = f"https://contact.auctions.yahoo.co.jp/seller/top?aid={query_params.get('aid', [''])[0]}&syid={query_params.get('syid', [''])[0]}&bid={query_params.get('bid', [''])[0]}&oid={query_params.get('oid', [''])[0]}"
+
+        # ヘッダーを構築
+        headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
+            "sec-ch-ua-arch": "\"arm\"",
+            "sec-ch-ua-full-version-list": "\"Google Chrome\";v=\"131.0.6778.205\", \"Chromium\";v=\"131.0.6778.205\", \"Not_A Brand\";v=\"24.0.0.0\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-model": "\"\"",
+            "sec-ch-ua-platform": "\"macOS\"",
+            "sec-ch-ua-platform-version": "\"15.1.1\"",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "Referer": referer,
+            "Referrer-Policy": "strict-origin-when-cross-origin"
+        }
+        # GETリクエストを送信
+        response = self.session.get(url, headers=headers)
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        soup = BeautifulSoup(response.text, 'html.parser')
+        values = extract_input_values_with_parent_form(soup)
+        return values
 
 
-def send_message(cookies, url, message, crumb):
-    """
-    指定されたURL、メッセージ、crumbを使用してPOSTリクエストを送信する関数。
+    def post_ship_preview(self, url, crumb):
+        """
+        URLから必要なデータを動的に生成し、POSTリクエストを送信します。
 
-    Args:
-        url (str): 送信先のURL。
-        message (str): 送信するメッセージ内容。
-        crumb (str): CSRF保護のためのcrumbトークン。
+        Args:
+            cookies (dict): リクエストに使用するクッキー情報。
+            url (str): リクエストに必要なパラメータを含むURL。
+            crumb (str): POSTデータに含めるcrumb値。
 
-    Returns:
-        dict: ステータスコードとレスポンスの内容。
-    """
-    # URLのパラメータを解析して必要な情報を取得
-    parsed_url = urlparse(url)
-    query_params = parse_qs(parsed_url.query)
+        Returns:
+            requests.Response: POSTリクエストのレスポンスオブジェクト。
+        """
+        # URLを解析
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        
+        # 必要なパラメータを取得
+        oid = query_params.get("oid", [None])[0]
+        syid = query_params.get("syid", [None])[0]
+        aid = query_params.get("aid", [None])[0]
+        bid = query_params.get("bid", [None])[0]
 
-    # 必要なパラメータを取得
-    oid = query_params.get("oid", [None])[0]
-    syid = query_params.get("syid", [None])[0]
-    aid = query_params.get("aid", [None])[0]
-    bid = query_params.get("bid", [None])[0]
+        if not all([oid, syid, aid, bid]):
+            raise ValueError("URLに必要なパラメータが不足しています。")
 
-    if not all([oid, syid, aid, bid]):
-        raise ValueError("URLに必要なパラメータが不足しています。")
+        # POSTデータを生成
+        data = {
+            "shipUseParent": "1",
+            "shippingMethod": "",
+            "aid": aid,
+            "syid": syid,
+            "bid": bid,
+            "oid": oid,
+            "_crumb": crumb,
+            "chargeForShipping": "0"
+        }
 
-    # リクエストヘッダー
-    headers = {
-        "accept": "application/json, text/javascript, */*; q=0.01",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "cache-control": "no-cache",
-        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "origin": "https://contact.auctions.yahoo.co.jp",
-        "pragma": "no-cache",
-        "priority": "u=1, i",
-        "referer": url,
-        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        "sec-ch-ua-arch": "arm",
-        "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-model": "",
-        "sec-ch-ua-platform": "macOS",
-        "sec-ch-ua-platform-version": "15.1.1",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "x-requested-with": "XMLHttpRequest",
-    }
+        # ヘッダーを構築
+        headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "cache-control": "no-cache",
+            "content-type": "application/x-www-form-urlencoded",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
+            "sec-ch-ua-arch": "\"arm\"",
+            "sec-ch-ua-full-version-list": "\"Google Chrome\";v=\"131.0.6778.205\", \"Chromium\";v=\"131.0.6778.205\", \"Not_A Brand\";v=\"24.0.0.0\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-model": "\"\"",
+            "sec-ch-ua-platform": "\"macOS\"",
+            "sec-ch-ua-platform-version": "\"15.1.1\"",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "Referer": url,
+            "Referrer-Policy": "strict-origin-when-cross-origin"
+        }
 
-    # データ
-    data = {
-        "oid": oid,
-        "syid": syid,
-        "aid": aid,
-        "bid": bid,
-        "crumb": crumb,
-        "body": message,
-    }
-    # リクエストを送信
-    response = requests.post("https://contact.auctions.yahoo.co.jp/message/submit", headers=headers, cookies=cookies, data=data)
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    return response
-
-
-def get_ship_preview(cookies, url):
-    """
-    URLからRefererヘッダーを作成し、GETリクエストを送信します。
-
-    Args:
-        cookies (dict): リクエストに使用するクッキー情報。
-        url (str): リクエスト先のURL。
-
-    Returns:
-        requests.Response: GETリクエストのレスポンスオブジェクト。
-    """
-    assert isinstance(url, str)
-    # URLを解析してRefererを作成
-    parsed_url = urlparse(url)
-    query_params = parse_qs(parsed_url.query)
-    
-    referer = f"https://contact.auctions.yahoo.co.jp/seller/top?aid={query_params.get('aid', [''])[0]}&syid={query_params.get('syid', [''])[0]}&bid={query_params.get('bid', [''])[0]}&oid={query_params.get('oid', [''])[0]}"
-
-    # ヘッダーを構築
-    headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "cache-control": "no-cache",
-        "pragma": "no-cache",
-        "priority": "u=0, i",
-        "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
-        "sec-ch-ua-arch": "\"arm\"",
-        "sec-ch-ua-full-version-list": "\"Google Chrome\";v=\"131.0.6778.205\", \"Chromium\";v=\"131.0.6778.205\", \"Not_A Brand\";v=\"24.0.0.0\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-model": "\"\"",
-        "sec-ch-ua-platform": "\"macOS\"",
-        "sec-ch-ua-platform-version": "\"15.1.1\"",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-user": "?1",
-        "upgrade-insecure-requests": "1",
-        "Referer": referer,
-        "Referrer-Policy": "strict-origin-when-cross-origin"
-    }
-    print(referer, url)
-    return
-    # GETリクエストを送信
-    response = requests.get(url, headers=headers, cookies=cookies)
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    soup = BeautifulSoup(response.text, 'html.parser')
-    values = extract_input_values_with_parent_form(soup)
-    return values
+        # POSTリクエストを送信
+        response = self.session.post(
+            "https://contact.auctions.yahoo.co.jp/seller/bundle/shippreview",
+            headers=headers,
+            data=data
+        )
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        soup = BeautifulSoup(response.text, 'html.parser')
+        values = extract_input_values_with_parent_form(soup)
+        return values
 
 
-def post_ship_preview(cookies, url, crumb):
-    """
-    URLから必要なデータを動的に生成し、POSTリクエストを送信します。
+    def post_ship_submit(self, url, crumb):
+        """
+        URLから必要なデータを動的に生成し、shipsubmit エンドポイントにPOSTリクエストを送信します。
 
-    Args:
-        cookies (dict): リクエストに使用するクッキー情報。
-        url (str): リクエストに必要なパラメータを含むURL。
-        crumb (str): POSTデータに含めるcrumb値。
+        Args:
+            cookies (dict): リクエストに使用するクッキー情報。
+            url (str): リクエストに必要なパラメータを含むURL。
+            crumb (str): POSTデータに含めるcrumb値。
 
-    Returns:
-        requests.Response: POSTリクエストのレスポンスオブジェクト。
-    """
-    # URLを解析
-    parsed_url = urlparse(url)
-    query_params = parse_qs(parsed_url.query)
-    
-    # 必要なパラメータを取得
-    oid = query_params.get("oid", [None])[0]
-    syid = query_params.get("syid", [None])[0]
-    aid = query_params.get("aid", [None])[0]
-    bid = query_params.get("bid", [None])[0]
+        Returns:
+            requests.Response: POSTリクエストのレスポンスオブジェクト。
+        """
+        # URLを解析
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+        
+        # 必要なパラメータを取得
+        oid = query_params.get("oid", [None])[0]
+        syid = query_params.get("syid", [None])[0]
+        aid = query_params.get("aid", [None])[0]
+        bid = query_params.get("bid", [None])[0]
 
-    if not all([oid, syid, aid, bid]):
-        raise ValueError("URLに必要なパラメータが不足しています。")
+        if not all([oid, syid, aid, bid]):
+            raise ValueError("URLに必要なパラメータが不足しています。")
 
-    # POSTデータを生成
-    data = {
-        "shipUseParent": "1",
-        "shippingMethod": "",
-        "aid": aid,
-        "syid": syid,
-        "bid": bid,
-        "oid": oid,
-        "_crumb": crumb,
-        "chargeForShipping": "0"
-    }
+        # POSTデータを生成
+        data = {
+            "back": "",
+            "aid": aid,
+            "syid": syid,
+            "bid": bid,
+            "oid": oid,
+            "_crumb": crumb,
+            "shipUseParent": "1",
+            "shippingMethod": "",
+            "shipChargeNumber": "",
+            "chargeForShipping": "0"
+        }
+        # return data
 
-    # ヘッダーを構築
-    headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "cache-control": "no-cache",
-        "content-type": "application/x-www-form-urlencoded",
-        "pragma": "no-cache",
-        "priority": "u=0, i",
-        "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
-        "sec-ch-ua-arch": "\"arm\"",
-        "sec-ch-ua-full-version-list": "\"Google Chrome\";v=\"131.0.6778.205\", \"Chromium\";v=\"131.0.6778.205\", \"Not_A Brand\";v=\"24.0.0.0\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-model": "\"\"",
-        "sec-ch-ua-platform": "\"macOS\"",
-        "sec-ch-ua-platform-version": "\"15.1.1\"",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-user": "?1",
-        "upgrade-insecure-requests": "1",
-        "Referer": url,
-        "Referrer-Policy": "strict-origin-when-cross-origin"
-    }
+        # ヘッダーを構築
+        headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "cache-control": "no-cache",
+            "content-type": "application/x-www-form-urlencoded",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
+            "sec-ch-ua-arch": "\"arm\"",
+            "sec-ch-ua-full-version-list": "\"Google Chrome\";v=\"131.0.6778.205\", \"Chromium\";v=\"131.0.6778.205\", \"Not_A Brand\";v=\"24.0.0.0\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-model": "\"\"",
+            "sec-ch-ua-platform": "\"macOS\"",
+            "sec-ch-ua-platform-version": "\"15.1.1\"",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "Referer": "https://contact.auctions.yahoo.co.jp/seller/bundle/shippreview",
+            "Referrer-Policy": "strict-origin-when-cross-origin"
+        }
 
-    # POSTリクエストを送信
-    response = requests.post(
-        "https://contact.auctions.yahoo.co.jp/seller/bundle/shippreview",
-        headers=headers,
-        cookies=cookies,
-        data=data
-    )
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    soup = BeautifulSoup(response.text, 'html.parser')
-    values = extract_input_values_with_parent_form(soup)
-    return values
+        # POSTリクエストを送信
+        response = self.session.post(
+            "https://contact.auctions.yahoo.co.jp/seller/bundle/shipsubmit",
+            headers=headers,
+            data=data
+        )
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        return response
 
 
-def post_ship_submit(cookies, url, crumb):
-    """
-    URLから必要なデータを動的に生成し、shipsubmit エンドポイントにPOSTリクエストを送信します。
 
-    Args:
-        cookies (dict): リクエストに使用するクッキー情報。
-        url (str): リクエストに必要なパラメータを含むURL。
-        crumb (str): POSTデータに含めるcrumb値。
+    def send_message(self, url, message, crumb):
+        """
+        指定されたURL、メッセージ、crumbを使用してPOSTリクエストを送信する関数。
 
-    Returns:
-        requests.Response: POSTリクエストのレスポンスオブジェクト。
-    """
-    # URLを解析
-    parsed_url = urlparse(url)
-    query_params = parse_qs(parsed_url.query)
-    
-    # 必要なパラメータを取得
-    oid = query_params.get("oid", [None])[0]
-    syid = query_params.get("syid", [None])[0]
-    aid = query_params.get("aid", [None])[0]
-    bid = query_params.get("bid", [None])[0]
+        Args:
+            url (str): 送信先のURL。
+            message (str): 送信するメッセージ内容。
+            crumb (str): CSRF保護のためのcrumbトークン。
 
-    if not all([oid, syid, aid, bid]):
-        raise ValueError("URLに必要なパラメータが不足しています。")
+        Returns:
+            dict: ステータスコードとレスポンスの内容。
+        """
+        # URLのパラメータを解析して必要な情報を取得
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
 
-    # POSTデータを生成
-    data = {
-        "back": "",
-        "aid": aid,
-        "syid": syid,
-        "bid": bid,
-        "oid": oid,
-        "_crumb": crumb,
-        "shipUseParent": "1",
-        "shippingMethod": "",
-        "shipChargeNumber": "",
-        "chargeForShipping": "0"
-    }
-    # return data
+        # 必要なパラメータを取得
+        oid = query_params.get("oid", [None])[0]
+        syid = query_params.get("syid", [None])[0]
+        aid = query_params.get("aid", [None])[0]
+        bid = query_params.get("bid", [None])[0]
 
-    # ヘッダーを構築
-    headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "cache-control": "no-cache",
-        "content-type": "application/x-www-form-urlencoded",
-        "pragma": "no-cache",
-        "priority": "u=0, i",
-        "sec-ch-ua": "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"",
-        "sec-ch-ua-arch": "\"arm\"",
-        "sec-ch-ua-full-version-list": "\"Google Chrome\";v=\"131.0.6778.205\", \"Chromium\";v=\"131.0.6778.205\", \"Not_A Brand\";v=\"24.0.0.0\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-model": "\"\"",
-        "sec-ch-ua-platform": "\"macOS\"",
-        "sec-ch-ua-platform-version": "\"15.1.1\"",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-user": "?1",
-        "upgrade-insecure-requests": "1",
-        "Referer": "https://contact.auctions.yahoo.co.jp/seller/bundle/shippreview",
-        "Referrer-Policy": "strict-origin-when-cross-origin"
-    }
+        if not all([oid, syid, aid, bid]):
+            raise ValueError("URLに必要なパラメータが不足しています。")
 
-    # POSTリクエストを送信
-    response = requests.post(
-        "https://contact.auctions.yahoo.co.jp/seller/bundle/shipsubmit",
-        headers=headers,
-        cookies=cookies,
-        data=data
-    )
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    return response
+        # リクエストヘッダー
+        headers = {
+            "accept": "application/json, text/javascript, */*; q=0.01",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "cache-control": "no-cache",
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "origin": "https://contact.auctions.yahoo.co.jp",
+            "pragma": "no-cache",
+            "priority": "u=1, i",
+            "referer": url,
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-arch": "arm",
+            "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-model": "",
+            "sec-ch-ua-platform": "macOS",
+            "sec-ch-ua-platform-version": "15.1.1",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "x-requested-with": "XMLHttpRequest",
+        }
+
+        # データ
+        data = {
+            "oid": oid,
+            "syid": syid,
+            "aid": aid,
+            "bid": bid,
+            "crumb": crumb,
+            "body": message,
+        }
+        # リクエストを送信
+        response = self.session.post("https://contact.auctions.yahoo.co.jp/message/submit", headers=headers, data=data)
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        return response
+
+
+    def request_ready_shippment(self, referer_url, _crumb):
+        # Referer URLからクエリパラメータを抽出
+        parsed_url = urlparse(referer_url)
+        query_params = parse_qs(parsed_url.query)
+
+        # 必要なパラメータを準備
+        aid = query_params.get("aid", [None])[0]
+        syid = query_params.get("syid", [None])[0]
+        bid = query_params.get("bid", [None])[0]
+        oid = query_params.get("oid", [None])[0]
+
+        if not all([aid, syid, bid, oid]):
+            raise ValueError("URLから必要なパラメータを抽出できませんでした。")
+
+        # ヘッダーを設定
+        headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "cache-control": "no-cache",
+            "content-type": "application/x-www-form-urlencoded",
+            "origin": "https://contact.auctions.yahoo.co.jp",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "referer": referer_url,
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-arch": "arm",
+            "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-model": '""',
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-ch-ua-platform-version": '"15.1.1"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-origin",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        }
+
+        # POSTデータを設定
+        data = {
+            "aid": aid,
+            "syid": syid,
+            "bid": bid,
+            "oid": oid,
+            ".crumb": _crumb,
+            "baggHandling1": "",
+            "baggHandling2": "",
+            "shipItemName": "",
+        }
+        
+        # POSTリクエストを送信
+        response = self.session.post(
+            "https://contact.auctions.yahoo.co.jp/seller/ready",
+            headers=headers,
+            data=data,
+        )
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        return response
+
+
+    def request_complete_shippment(self, url, _crumb, ):
+        parsed_url = urlparse(url)
+        query_params = parse_qs(parsed_url.query)
+
+        # 必要なパラメータを準備
+        aid = query_params.get("aid", [None])[0]
+        syid = query_params.get("syid", [None])[0]
+        bid = query_params.get("bid", [None])[0]
+        oid = query_params.get("oid", [None])[0]
+
+        if not all([aid, syid, bid, oid]):
+            raise ValueError("URLから必要なパラメータを抽出できませんでした。")
+
+        headers = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'accept-language': 'ja,en-US;q=0.9,en;q=0.8',
+            'cache-control': 'no-cache',
+            'pragma': 'no-cache',
+            'priority': 'u=0, i',
+            'referer': url,
+            'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            'sec-ch-ua-arch': '"arm"',
+            'sec-ch-ua-full-version-list': '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-model': '""',
+            'sec-ch-ua-platform': '"macOS"',
+            'sec-ch-ua-platform-version': '"15.1.1"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        }
+
+        params = {
+            "aid": aid,
+            "syid": syid,
+            "bid": bid,
+            "oid": oid,
+            ".crumb": _crumb,
+            'shipInvoiceNumReg': '1',
+        }
+        
+        response = self.session.get(
+            'https://contact.auctions.yahoo.co.jp/seller/submit',
+            headers=headers,
+            params=params,
+        )
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        return response
+
+
+    def shipping_print_code(self, crumb_list, navi_list, img_paths):
+        # 何番目の取引に発送するか
+        main_idx=0
+        crumb = crumb_list[main_idx]
+        url = navi_list[main_idx]
+        message = generate_message(img_paths, navi_list)
+        response = self.send_message(url, message, crumb)
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        return response
 
 
 def calculate_chunks_length(total_length, max_size=23):
@@ -1320,131 +1439,6 @@ def generate_message(img_paths, navi_list):
     return message
 
 
-def request_ready_shippment(cookies, referer_url, _crumb):
-    # Referer URLからクエリパラメータを抽出
-    parsed_url = urlparse(referer_url)
-    query_params = parse_qs(parsed_url.query)
-
-    # 必要なパラメータを準備
-    aid = query_params.get("aid", [None])[0]
-    syid = query_params.get("syid", [None])[0]
-    bid = query_params.get("bid", [None])[0]
-    oid = query_params.get("oid", [None])[0]
-
-    if not all([aid, syid, bid, oid]):
-        raise ValueError("URLから必要なパラメータを抽出できませんでした。")
-
-    # ヘッダーを設定
-    headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "cache-control": "no-cache",
-        "content-type": "application/x-www-form-urlencoded",
-        "origin": "https://contact.auctions.yahoo.co.jp",
-        "pragma": "no-cache",
-        "priority": "u=0, i",
-        "referer": referer_url,
-        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        "sec-ch-ua-arch": "arm",
-        "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-model": '""',
-        "sec-ch-ua-platform": '"macOS"',
-        "sec-ch-ua-platform-version": '"15.1.1"',
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-user": "?1",
-        "upgrade-insecure-requests": "1",
-        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    }
-
-    # POSTデータを設定
-    data = {
-        "aid": aid,
-        "syid": syid,
-        "bid": bid,
-        "oid": oid,
-        ".crumb": _crumb,
-        "baggHandling1": "",
-        "baggHandling2": "",
-        "shipItemName": "",
-    }
-    
-    # POSTリクエストを送信
-    response = requests.post(
-        "https://contact.auctions.yahoo.co.jp/seller/ready",
-        headers=headers,
-        cookies=cookies,
-        data=data,
-    )
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    return response
-
-
-def request_complete_shippment(cookies, url, _crumb, ):
-    parsed_url = urlparse(url)
-    query_params = parse_qs(parsed_url.query)
-
-    # 必要なパラメータを準備
-    aid = query_params.get("aid", [None])[0]
-    syid = query_params.get("syid", [None])[0]
-    bid = query_params.get("bid", [None])[0]
-    oid = query_params.get("oid", [None])[0]
-
-    if not all([aid, syid, bid, oid]):
-        raise ValueError("URLから必要なパラメータを抽出できませんでした。")
-
-    headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'accept-language': 'ja,en-US;q=0.9,en;q=0.8',
-        'cache-control': 'no-cache',
-        'pragma': 'no-cache',
-        'priority': 'u=0, i',
-        'referer': url,
-        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        'sec-ch-ua-arch': '"arm"',
-        'sec-ch-ua-full-version-list': '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-model': '""',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-ch-ua-platform-version': '"15.1.1"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'same-origin',
-        'sec-fetch-user': '?1',
-        'upgrade-insecure-requests': '1',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    }
-
-    params = {
-        "aid": aid,
-        "syid": syid,
-        "bid": bid,
-        "oid": oid,
-        ".crumb": _crumb,
-        'shipInvoiceNumReg': '1',
-    }
-    
-    response = requests.get(
-        'https://contact.auctions.yahoo.co.jp/seller/submit',
-        headers=headers,
-        params=params,
-        cookies=cookies
-    )
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    return response
-
-
-def shipping_print_code(cookies, crumb_list, navi_list, img_paths):
-    # 何番目の取引に発送するか
-    main_idx=0
-    crumb = crumb_list[main_idx]
-    url = navi_list[main_idx]
-    message = generate_message(img_paths, navi_list)
-    response = send_message(cookies, url, message, crumb)
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    return response
 
 
 def display_resized_images_horizontally(files, max_images_per_row=5):
@@ -1514,7 +1508,7 @@ def cache_to_csv(cache_dir="./cache"):
 
         return wrapper
     return decorator
-    
+
 @cache_to_csv()
 def get_sales(cookies, datestr,):
     # ベースヘッダー

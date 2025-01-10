@@ -258,12 +258,12 @@ class FillLabelFilter(Filter):
         image_instance.image = PILImage.composite(fill_image, image_instance.image, image_instance.label_mask)
 
 class ResizeFilter(Filter):
-    def __init__(self, target_width=1000):
+    def __init__(self, max_dimension=1000):
         """
-        指定された横幅に基づいて画像をリサイズします。
-        :param target_width: リサイズ後の横幅（ピクセル単位）
+        指定された最大辺の長さに基づいて画像をリサイズします。
+        :param max_dimension: リサイズ後の最大辺の長さ（ピクセル単位）
         """
-        self.target_width = target_width
+        self.max_dimension = max_dimension
 
     def apply(self, image_instance):
         """
@@ -277,16 +277,19 @@ class ResizeFilter(Filter):
         # 現在のサイズを取得
         original_width, original_height = image_instance.image.size
 
-        # 新しい縦幅を計算（アスペクト比を維持）
-        aspect_ratio = original_height / original_width
-        target_height = int(self.target_width * aspect_ratio)
+        # 縮小率を計算
+        scale = min(self.max_dimension / original_width, self.max_dimension / original_height)
+
+        # 新しいサイズを計算
+        target_width = int(original_width * scale)
+        target_height = int(original_height * scale)
 
         # 画像をリサイズ（最新の Pillow に対応）
         image_instance.image = image_instance.image.resize(
-            (self.target_width, target_height),
+            (target_width, target_height),
             PILImage.Resampling.LANCZOS
         )
-    
+
 class LabelBlurFilter(Filter):
     def __init__(self, radius=5, mask_blur_radius=10):
         """
