@@ -19,8 +19,8 @@ class ResolutionError(Exception):
 
 class MyImage:
     def __init__(self, image_path, label_colors={
-        "price": (0, 255, 0, 255),    # 価格ラベル: 緑
-        "title": (255, 0, 255, 255)   # タイトルラベル: マゼンタ
+        "1": (0, 255, 0, 255),    # 価格ラベル: 緑
+        "4": (255, 0, 255, 255)   # タイトルラベル: マゼンタ
     }, tolerance=2, aspect_ratio_tolerance=1e-1, padding=0, skip_resolution_check=False):
         self.image_path = image_path
         self.original_image = PILImage.open(image_path).convert("RGBA")
@@ -262,6 +262,332 @@ class MyImage:
 class Filter:
     def apply(self, image_instance):
         raise NotImplementedError("Filter subclasses must implement the apply method.")
+
+import os
+import random
+import numpy as np
+import cv2
+from PIL import Image as PILImage
+from PIL import ImageDraw, ImageFont
+import albumentations as A
+
+class YoloDatasetFilter(Filter):
+    """
+    Albumentationsを使って画像・複数マスクに同一のオーグメンテーションをn回適用し、
+    元画像 + 変形画像をYOLO形式アノテーション付きで保存するフィルタ。
+    最後に得られた画像(矩形描画済み)をimage_instance.imageに書き戻す。
+    """
+
+    def __init__(
+        self,
+        dataset_root="datasets",
+        n=2,
+        train_ratio=0.8,  # train / val の分割比率
+        font_path="./material/Gidole-Regular.ttf",
+        font_size=20
+    ):
+        """
+        :param dataset_root: データを保存するルートディレクトリ
+        :param n: 何パターンのオーグメンテーションを生成するか
+        :param train_ratio: train と val を分割するときの比率
+        :param font_path: ラベル可視化時に使用するフォントのパス
+        :param font_size: ラベル可視化時に使用するフォントサイズ
+        """
+        self.dataset_root = dataset_root
+        self.n = n
+        self.train_ratio = train_ratio
+        self.font_path = font_path
+        self.font_size = font_size
+
+        # ラベル名 -> クラスID の対応表（必要に応じて更新）
+        self.label_to_id = {}
+
+        # 代表的なオーグメンテーション例
+        # 画像 & マスクをまとめて受け取れるように additional_targets を設定する
+        self.transform = A.Compose([
+            # 反転
+            A.HorizontalFlip(p=0.5),  # 水平方向の反転
+            A.VerticalFlip(p=0.5),    # 垂直方向の反転
+            
+            # 幾何学的変換
+            A.ShiftScaleRotate(
+                shift_limit=0.0625,    # シフト範囲
+                scale_limit=0.1,       # スケール変更範囲
+                rotate_limit=360,      # 任意角度の回転
+                border_mode=cv2.BORDER_REFLECT_101,  # 境界の補間方法
+                p=0.9                  # 適用確率
+            ),
+            # A.GridDistortion(
+            #     num_steps=5,           # グリッドの分割数
+            #     distort_limit=0.3,     # 歪みの強度
+            #     p=0.5                  # 適用確率
+            # ),
+            # 視覚効果の調整
+            A.RandomBrightnessContrast(
+                brightness_limit=0.2,  # 明るさの調整範囲
+                contrast_limit=0.2,    # コントラストの調整範囲
+                p=0.5                  # 適用確率
+            ),
+            A.GaussianBlur(
+                blur_limit=(3, 7),     # ぼかしのカーネルサイズ範囲
+                p=0.5                  # 適用確率
+            ),
+            A.LongestMaxSize(max_size=640, p=1.0),  # 長辺を640にリサイズ
+            A.PadIfNeeded(
+                min_height=640,
+                min_width=640,
+                border_mode=cv2.BORDER_CONSTANT,
+                p=1.0
+            ),
+
+        ])
+
+    def _init_label_to_id(self, image_instance):
+        """
+        image_instance.label_masks のキー(ラベル名)を整数に変換して、そのままクラスIDに割り当てる。
+        例: label_name="1" -> class_id=1, label_name="4" -> class_id=4
+        """
+        if not self.label_to_id:
+            for label_name in image_instance.label_masks.keys():
+                self.label_to_id[label_name] = int(label_name)
+
+    def _save_yolo_txt(self, yolo_bboxes, save_path):
+        """
+        YOLO形式のアノテーションをテキストファイルに書き込む。
+        yolo_bboxes: [(class_id, x_center, y_center, w, h), ...] (正規化済み)
+        """
+        with open(save_path, "w") as f:
+            for bbox in yolo_bboxes:
+                class_id, x_c, y_c, w, h = bbox
+                line = f"{class_id} {x_c:.6f} {y_c:.6f} {w:.6f} {h:.6f}\n"
+                f.write(line)
+
+    def _get_bboxes_from_mask(self, mask_array, label_name):
+        """
+        単一ラベル用マスク（2値）から輪郭を取り、YOLO形式で必要な(boundingRect)を取得。
+        ピクセル座標で返す: [(class_id, x_center, y_center, w, h), ...] (正規化前)
+        """
+        # 2値化（すでに0/255の場合でも念のため再度threshold）
+        _, bin_mask = cv2.threshold(mask_array, 128, 255, cv2.THRESH_BINARY)
+
+        # 輪郭抽出
+        contours, _ = cv2.findContours(bin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        bboxes = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+
+            class_id = self.label_to_id[label_name]
+            x_center = x + w / 2.0
+            y_center = y + h / 2.0
+
+            bboxes.append((class_id, x_center, y_center, w, h))
+        return bboxes
+
+    def _normalize_bboxes(self, bboxes, img_w, img_h):
+        """
+        ピクセル座標のバウンディングボックスをYOLO形式(0〜1)に正規化する。
+        bboxes: [(class_id, x_center, y_center, w, h), ...]
+        """
+        norm_bboxes = []
+        for class_id, x_c, y_c, w, h in bboxes:
+            x_c_norm = x_c / img_w
+            y_c_norm = y_c / img_h
+            w_norm = w / img_w
+            h_norm = h / img_h
+            norm_bboxes.append((class_id, x_c_norm, y_c_norm, w_norm, h_norm))
+        return norm_bboxes
+
+    def _draw_bboxes(self, img_array, bboxes, label_id_to_name, label_id_to_color):
+        """
+        label_id_to_color: {class_id: (R, G, B, A), ...} として
+        元のラベル色を取得して描画する
+        """
+        # PILのフォント関連
+        try:
+            font = ImageFont.truetype(self.font_path, self.font_size)
+        except IOError:
+            print(f"フォントファイルが見つかりません: {self.font_path}。デフォルトフォントに切り替えます。")
+            font = ImageFont.load_default()
+
+        # bboxes がピクセル座標の場合、描画用に(x1, y1, x2, y2)を算出
+        for class_id, x_c, y_c, w, h in bboxes:
+            x1 = int(x_c - w/2)
+            y1 = int(y_c - h/2)
+            x2 = int(x_c + w/2)
+            y2 = int(y_c + h/2)
+
+            # --- 元のラベル色を取得 ---
+            r, g, b, a = label_id_to_color[class_id]
+            bgr_color = (b, g, r)  # OpenCVはBGR
+
+            # 矩形描画
+            cv2.rectangle(img_array, (x1, y1), (x2, y2), bgr_color, 2)
+
+            label_str = label_id_to_name[class_id]
+
+            # PIL でテキストを描画するには、一度PIL Imageに変換
+            pil_img = PILImage.fromarray(img_array)
+            draw = ImageDraw.Draw(pil_img)
+
+            # テキストサイズを取得
+            text_bbox = draw.textbbox((0, 0), label_str, font=font)
+            text_w = text_bbox[2] - text_bbox[0]
+            text_h = text_bbox[3] - text_bbox[1]
+
+            # テキスト背景用の半透明四角
+            # ボックスは矩形の上に配置
+            bg_x1 = x1
+            bg_y1 = y1 - text_h - 4
+            bg_x2 = x1 + text_w + 8
+            bg_y2 = y1
+
+            # 場合によっては矩形の上が画像外に行くかもしれないのでクリップ
+            bg_x1 = max(0, bg_x1)
+            bg_y1 = max(0, bg_y1)
+            bg_x2 = min(pil_img.width, bg_x2)
+            bg_y2 = min(pil_img.height, bg_y2)
+
+            # 背景描画(黒の半透明)
+            draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=(0, 0, 0, 128))
+            # テキスト描画 (少し右下にオフセット)
+            text_draw_x = bg_x1 + 4
+            text_draw_y = bg_y1 + 2
+            draw.text((text_draw_x, text_draw_y), label_str, font=font, fill=(255, 255, 255, 255))
+
+            # 再度numpy配列に戻す
+            img_array = np.array(pil_img)
+
+        return img_array
+
+    def apply(self, image_instance):
+        """
+        - image_instance.image と image_instance.label_masks[*] から YOLO形式のデータセットを作成
+        - 元画像 + n回のオーグメンテーション結果 を train/val に振り分け保存
+        - 最終変形の画像にだけ矩形(ラベル色で描画)をつけ、image_instance.image に書き戻す
+        """
+        if not image_instance.label_masks:
+            print("ラベルマスクが存在しません。処理をスキップします。")
+            return
+
+        # ラベルIDの初期化
+        self._init_label_to_id(image_instance)
+
+        # 出力ディレクトリの作成
+        img_train_dir = os.path.join(self.dataset_root, "images", "train")
+        img_val_dir   = os.path.join(self.dataset_root, "images", "val")
+        lbl_train_dir = os.path.join(self.dataset_root, "labels", "train")
+        lbl_val_dir   = os.path.join(self.dataset_root, "labels", "val")
+        os.makedirs(img_train_dir, exist_ok=True)
+        os.makedirs(img_val_dir, exist_ok=True)
+        os.makedirs(lbl_train_dir, exist_ok=True)
+        os.makedirs(lbl_val_dir, exist_ok=True)
+
+        # 画像のベース名（拡張子除去）
+        base_name = os.path.splitext(os.path.basename(image_instance.image_path))[0]
+
+        # 元画像をnumpy配列(RGB)に
+        orig_pil_img = image_instance.image.convert("RGB")
+        orig_img_array = np.array(orig_pil_img)
+
+        # label_masks をリスト化して、順番を固定
+        label_names = list(image_instance.label_masks.keys())
+        mask_arrays = []
+        for label_name in label_names:
+            # ★ グレースケールにせず、そのまま配列化
+            m = np.array(image_instance.label_masks[label_name])
+            mask_arrays.append(m)
+
+        # n回 + 1回(元画像) = 合計 n+1 パターンを保存
+        # 0番目: 元画像を保存 (変形なし)
+        # 1〜n番目: 変形あり
+        total_iterations = self.n + 1
+
+        # この後、最終的に書き戻す用
+        final_img_array = None
+        final_bboxes_px = None  # ピクセル座標のバウンディングボックス
+        is_train_for_this_image = (random.random() < self.train_ratio)
+
+        for i in range(total_iterations):
+            # train or val 判定
+            is_train = is_train_for_this_image  # すべて固定
+
+            if i == 0:
+                # 変形なし: 元画像を使う
+                aug_img_array = orig_img_array
+                aug_mask_arrays = mask_arrays
+            else:
+                # Albumentationsで画像 + 複数マスクを同時に変形
+                transformed = self.transform(image=orig_img_array, masks=mask_arrays)
+                aug_img_array = transformed["image"]
+                aug_mask_arrays = transformed["masks"]
+
+            # バウンディングボックス(ピクセル座標)をまとめる
+            all_bboxes_px = []
+            for label_name, mask_arr in zip(label_names, aug_mask_arrays):
+                bboxes_px = self._get_bboxes_from_mask(mask_arr, label_name)
+                all_bboxes_px.extend(bboxes_px)
+
+            # ★ もしバウンディングボックスが1つも無いなら終了
+                if len(all_bboxes_px) == 0:
+                    print("ラベル領域が一つもないため、データセット出力をスキップします。")
+                    return
+
+            # 画像サイズ
+            img_h, img_w = aug_img_array.shape[:2]
+
+            # YOLO形式に正規化
+            yolo_bboxes = self._normalize_bboxes(all_bboxes_px, img_w, img_h)
+
+            # 保存ファイル名 (i=0 は "_orig" とでも付けて区別)
+            if i == 0:
+                suffix = "_orig"
+            else:
+                suffix = f"_{i:03d}"
+
+            save_img_name = f"{base_name}{suffix}.jpg"
+            save_txt_name = f"{base_name}{suffix}.txt"
+
+            if is_train:
+                img_save_path = os.path.join(img_train_dir, save_img_name)
+                txt_save_path = os.path.join(lbl_train_dir, save_txt_name)
+            else:
+                img_save_path = os.path.join(img_val_dir, save_img_name)
+                txt_save_path = os.path.join(lbl_val_dir, save_txt_name)
+
+            # PILに戻して保存 (JPEG)
+            PILImage.fromarray(aug_img_array).save(img_save_path, quality=95)
+            # テキスト書き込み
+            self._save_yolo_txt(yolo_bboxes, txt_save_path)
+
+            # 最後のイテレーション(i == self.n)の結果は後続フィルタ用に保持
+            if i == self.n:
+                final_img_array = aug_img_array
+                final_bboxes_px = all_bboxes_px
+
+        # --- 最終変形画像にバウンディングボックス(ラベル名 & 元のラベル色)を描画 ---
+        if final_img_array is not None and final_bboxes_px is not None:
+            # label_id -> label_name
+            id_to_label = {v: k for k, v in self.label_to_id.items()}
+
+            # ★ label_id -> label_color (元のラベル色を使用)
+            id_to_color = {}
+            for label_name, class_id in self.label_to_id.items():
+                id_to_color[class_id] = image_instance.label_colors[label_name]  # (R, G, B, A)
+
+            # 矩形を描画 (OpenCV & PIL 併用)
+            drawn_img = self._draw_bboxes(
+                final_img_array.copy(),
+                final_bboxes_px,
+                label_id_to_name=id_to_label,
+                label_id_to_color=id_to_color  # ★ 追加: ラベル色を渡す
+            )
+            # RGBAに変換して image_instance.image へ書き戻す
+            final_pil = PILImage.fromarray(drawn_img, mode="RGB").convert("RGBA")
+            image_instance.image = final_pil
+
+        print(f"[YoloDatasetFilter] YOLO形式のデータセットを生成しました: {self.dataset_root}")
+        print(f"  - 元画像も含め、合計 {total_iterations}パターン保存しました。")
 
 
 class WhiteFillRectFilter(Filter):
