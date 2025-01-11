@@ -3,13 +3,13 @@ from datetime import datetime, timedelta
 from enum import Enum
 from functools import wraps
 from io import StringIO
-from IPython.core.display import HTML
 from lib.netprint import img2url_multi
 from lxml import etree
 from pathlib import Path
 from PIL import Image
 from PIL import Image
 from requests_toolbelt.multipart.encoder import MultipartEncoder
+from ruamel.yaml import YAML
 from urllib.parse import urlparse, urlunparse, parse_qs, ParseResult
 import functools
 import glob
@@ -18,20 +18,12 @@ import json
 import logging
 import math
 import matplotlib.pyplot as plt
-import numpy as np
-import os
 import os
 import pandas as pd
-import pickle
 import re
 import requests
 import time
-import tqdm
 import urllib.parse
-import yaml
-
-
-
 
 
 
@@ -454,10 +446,34 @@ def parse_status_from_class(class_name):
 
 
 
-def load_config(config_path):
-    """YAMLファイルを読み込む"""
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+def load_config(file_path):
+    yaml = YAML()
+    with open(file_path, "r", encoding="utf-8") as f:
+        return yaml.load(f), yaml
+
+def save_config(file_path, config, yaml):
+    with open(file_path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f)
+
+
+def serialize_cookies(cookies):
+    return  [
+        {
+            "domain": cookie.domain,
+            "expirationDate": float(cookie.expires) if cookie.expires else None,
+            "hostOnly": not cookie.domain_initial_dot,
+            "httpOnly": "HttpOnly" in cookie._rest,
+            "name": cookie.name,
+            "path": cookie.path,
+            "sameSite": "unspecified",
+            "secure": cookie.secure,
+            "session": cookie.discard,
+            "storeId": "0",
+            "value": cookie.value,
+        }
+        for cookie in cookies
+    ]
+
 
 FILE_REGEX=r".+/[a-z]+_[0-9a-f]{6}\.jpg$"
 
@@ -468,12 +484,16 @@ def get_original_files(pattern="data/*/*.jpg"):
     # 更新日時でソート
     return sorted(original_files, key=os.path.getmtime, reverse=True)
 
-def get_original_files_with_tags(tags, base_pattern="data/{}/*.jpg"):
+def get_original_files_with_tags(tags, base_pattern="data/{}/*.jpg", suffix="sample"):
     """
     元画像のみを取得し、更新日時が早い順にソート
     :param tags: マッチさせたいタグのリスト (例: ["a", "b"])
     :param base_pattern: ベースとなるパターン (デフォルトは "data/{}/**/*.jpg")
     """
+    if suffix != "":
+        suffix = f"_{suffix}"
+
+    assert isinstance(tags, list), tags
     files = []
     for tag in tags:
         # 各タグごとにパターンを生成してマッチするファイルを取得
@@ -485,7 +505,7 @@ def get_original_files_with_tags(tags, base_pattern="data/{}/*.jpg"):
     # print(original_files)
     # 更新日時でソートして返す
     files = sorted(original_files, key=os.path.getmtime, reverse=True)  # reverse=Trueで新しい順にソート
-    file_paths = [f"{file_path.rsplit('.', 1)[0]}_sample.jpg" for file_path in files]
+    file_paths = [f"{file_path.rsplit('.', 1)[0]}{suffix}.jpg" for file_path in files]
     assert all([os.path.exists(f) for f in files]), files
     assert all([os.path.exists(f) for f in file_paths]), file_paths
     return file_paths
@@ -898,6 +918,10 @@ class YahooAuctionTrade():
     
         return combined_df
     
+    def get_closed_df(self, max_pages=2):
+        url="https://auctions.yahoo.co.jp/closeduser/jp/show/mystatus?select=closed&hasWinner=1"
+        return self.fetch_all_pages(url, index_col=0, max_pages=max_pages)
+
     @cache_status
     def get_status(self, url):
         # ヘッダーの設定
@@ -1417,8 +1441,8 @@ def generate_message(img_paths, navi_list):
     if len(navi_list) >= 2:
         navi_text = "・" + "\n・".join(navi_list)
         summary_message = f"""
-以下の取引に関連する画像 {len(img_paths)} 枚を一括でまとめたプリントコードになります。
-そのため、他の取引ナビでの連絡は省略させていただきますのでご了承ください。
+以下の取引に関連する画像 {len(img_paths)} 枚のプリントコードです。
+他の取引ナビでのご連絡は省略させていただきますのでご了承ください。
 
 {navi_text}
 """
@@ -1430,7 +1454,7 @@ def generate_message(img_paths, navi_list):
 お支払いありがとうございます。
 プリントコードを {calculate_chunks_length(len(img_paths))} 枚発行しましたのでお知らせいたします。
 {summary_message}
-こちらのプリントコードをもって発送に代えさせていただきます。
+本プリントコードをもって発送完了と代えさせていただきます。
 プリント後、受け取り連絡をお願いいたします。この度はありがとうございました！
 
 {qrcode_image}

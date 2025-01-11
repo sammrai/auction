@@ -18,25 +18,30 @@ class ResolutionError(Exception):
 
 
 class MyImage:
-    def __init__(self, image_path, label_color=(0, 255, 0, 255), tolerance=2, aspect_ratio_tolerance=1e-1, padding=0):
+    def __init__(self, image_path, label_colors={
+        "price": (0, 255, 0, 255),    # 価格ラベル: 緑
+        "title": (255, 0, 255, 255)   # タイトルラベル: マゼンタ
+    }, tolerance=2, aspect_ratio_tolerance=1e-1, padding=0, skip_resolution_check=False):
         self.image_path = image_path
         self.original_image = PILImage.open(image_path).convert("RGBA")
         self.image = self.original_image.copy()
-        self.label_color = label_color
+        self.label_colors = label_colors
         self.tolerance = tolerance
         self.aspect_ratio_tolerance = aspect_ratio_tolerance
         self.label_image = self._load_label_image()
-        self.label_mask = None
+        self.label_masks = {}  # 色ごとのマスクを保持
         self.saved_file_path = None
+        self.skip_resolution_check = skip_resolution_check
 
         # 解像度チェック
-        self._check_resolution()
+        if not skip_resolution_check:
+            self._check_resolution()
 
         if not self.label_image:
             raise LabelImageNotFoundError(f"Label image not found for {image_path}")
 
         self._check_aspect_ratio()
-        self._generate_label_mask(padding=padding)
+        self._generate_label_masks(padding=padding)
         self.filters_applied = []
 
     def _check_resolution(self):
@@ -70,25 +75,31 @@ class MyImage:
                 f"Aspect ratio mismatch: label({label_aspect:.6f}) vs image({image_aspect:.6f})"
             )
 
-    def _generate_label_mask(self, padding=0):
-        """効率的にラベルマスクを生成し、指定されたパディング量で領域を拡張"""
+    def _generate_label_masks(self, padding=0):
+        """各ラベル色に対応するマスクを生成"""
         label_resized = self.label_image.resize(self.image.size)
         label_array = np.array(label_resized)
     
-        target_color = np.array(self.label_color[:3])
-        diff = np.abs(label_array[..., :3] - target_color)
-    
-        mask = np.all(diff <= self.tolerance, axis=-1).astype(np.uint8) * 255
-    
-        # ラベル領域が存在しない場合のチェック
-        # if np.sum(mask) == 0:
-            # raise ValueError(f"ラベル画像に指定された色 {self.label_color} が存在しません: {self.image_path}")
-    
-        self.label_mask = PILImage.fromarray(mask, mode="L")
-    
-        # パディング処理
-        if padding > 0:
-            self.label_mask = self._expand_mask(self.label_mask, padding)
+        # 各ラベル色に対してマスクを生成
+        for label_name, color in self.label_colors.items():
+            target_color = np.array(color[:3])
+            diff = np.abs(label_array[..., :3] - target_color)
+            mask = np.all(diff <= self.tolerance, axis=-1).astype(np.uint8) * 255
+            
+            # マスクを PIL Image として保存
+            label_mask = PILImage.fromarray(mask, mode="L")
+            
+            # パディング処理
+            if padding > 0:
+                label_mask = self._expand_mask(label_mask, padding)
+                
+            self.label_masks[label_name] = label_mask
+
+        # 全てのマスクを統合した総合マスク (後方互換性のため)
+        combined_mask = np.zeros(mask.shape, dtype=np.uint8)
+        for mask in self.label_masks.values():
+            combined_mask |= np.array(mask)
+        self.label_mask = PILImage.fromarray(combined_mask, mode="L")
 
     def _expand_mask(self, mask, padding):
         """
@@ -128,15 +139,19 @@ class MyImage:
         new_instance.image_path = self.image_path
         new_instance.original_image = self.original_image
         new_instance.image = self.image.copy()
-        new_instance.label_color = self.label_color
+        new_instance.label_colors = self.label_colors
         new_instance.tolerance = self.tolerance
         new_instance.aspect_ratio_tolerance = self.aspect_ratio_tolerance
         new_instance.label_image = self.label_image
+        new_instance.label_masks = {k: v.copy() for k, v in self.label_masks.items()}
         new_instance.label_mask = self.label_mask.copy() if self.label_mask else None
         new_instance.filters_applied = self.filters_applied.copy()
         new_instance.saved_file_path = self.saved_file_path
         return new_instance
 
+    def get_mask(self, label_name):
+        """指定されたラベル名のマスクを取得"""
+        return self.label_masks.get(label_name)
 
     def apply_filter(self, filter_instance):
         """フィルタを適用"""
@@ -247,6 +262,86 @@ class MyImage:
 class Filter:
     def apply(self, image_instance):
         raise NotImplementedError("Filter subclasses must implement the apply method.")
+
+
+class WhiteFillRectFilter(Filter):
+    def __init__(self, font_path="./material/Gidole-Regular.ttf", font_size=30, line_thickness=3):
+        self.font_path = font_path
+        self.font_size = font_size
+        self.line_thickness = line_thickness
+
+    def apply(self, image_instance):
+        if not image_instance.label_mask:
+            print("No label mask available for WhiteFillRectFilter.")
+            return
+
+        # 画像をRGBAに変換
+        if image_instance.image.mode != "RGBA":
+            image_instance.image = image_instance.image.convert("RGBA")
+        
+        # numpy配列に変換
+        img_array = np.array(image_instance.image)
+        
+        try:
+            font = ImageFont.truetype(self.font_path, self.font_size)
+        except IOError:
+            print(f"フォントファイルが見つかりません: {self.font_path}")
+            font = ImageFont.load_default()
+
+        # 各ラベル色ごとに処理
+        for label_name, color in image_instance.label_colors.items():
+            mask = image_instance.label_masks[label_name]
+            mask_array = np.array(mask.convert("L"), dtype=np.uint8)
+            
+            # 2値化
+            _, bin_mask = cv2.threshold(mask_array, 128, 255, cv2.THRESH_BINARY)
+            
+            # 輪郭を抽出
+            contours, _ = cv2.findContours(bin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # 各輪郭に対して処理
+            for cnt in contours:
+                # 通常の長方形を取得
+                x, y, w, h = cv2.boundingRect(cnt)
+                
+                # OpenCV用の色形式に変換 (BGR)
+                bgr_color = (color[2], color[1], color[0])
+                
+                # 長方形を描画
+                cv2.rectangle(img_array, (x, y), (x + w, y + h), 
+                            bgr_color, self.line_thickness)
+                
+                # PILでテキストを描画するための一時的な画像
+                text_img = PILImage.fromarray(img_array)
+                draw = ImageDraw.Draw(text_img)
+                
+                # テキストのサイズを取得
+                text_bbox = draw.textbbox((0, 0), label_name, font=font)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_height = text_bbox[3] - text_bbox[1]
+                
+                # テキストの背景を描画（黒の半透明）
+                text_bg_coords = [
+                    x,  # x
+                    y - text_height - 4,  # y (長方形の上に配置)
+                    x + text_width + 8,  # width
+                    y  # height
+                ]
+                draw.rectangle(text_bg_coords, fill=(0, 0, 0, 128))
+                
+                # テキストを描画
+                draw.text(
+                    (x + 4, y - text_height - 2),  # 位置を微調整
+                    label_name,
+                    font=font,
+                    fill=color
+                )
+                
+                # 描画結果を反映
+                img_array = np.array(text_img)
+
+        # 結果をPIL Imageに戻す
+        image_instance.image = PILImage.fromarray(img_array, "RGBA")
 
 
 class FillLabelFilter(Filter):
@@ -619,15 +714,19 @@ import numpy as np
 import cv2
 from PIL import Image as PILImage
 
-class WhiteFillRectFilter(Filter):
+import numpy as np
+import cv2
+from PIL import Image as PILImage
+
+class WhiteFillRotatedRectFilter(Filter):
     def apply(self, image_instance):
         if not image_instance.label_mask:
-            print("No label mask available for WhiteFillRectFilter.")
+            print("No label mask available for WhiteFillRotatedRectFilter.")
             return
 
-        # 1) 画像モードを RGBA に統一
-        if image_instance.image.mode != "RGBA":
-            image_instance.image = image_instance.image.convert("RGBA")
+        # 1) 画像を一律で RGB 化 (もしくは RGBA 化したければ適宜変更)
+        if image_instance.image.mode != "RGB":
+            image_instance.image = image_instance.image.convert("RGB")
 
         # 2) label_mask も L(8bitグレースケール) に変換 → numpy配列化
         mask_gray = image_instance.label_mask.convert("L")
@@ -645,54 +744,10 @@ class WhiteFillRectFilter(Filter):
         # 6) 最小外接長方形を白塗り (RGBA)
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
-            # RGBA なので (255,255,255,255) の4要素
             img_array[y : y + h, x : x + w] = (255, 255, 255, 255)
 
         # 7) 塗り終わった配列を再度 PIL Image に戻す (RGBA)
         image_instance.image = PILImage.fromarray(img_array, mode="RGBA")
-
-import numpy as np
-import cv2
-from PIL import Image as PILImage
-
-class WhiteFillRotatedRectFilter(Filter):
-    def apply(self, image_instance):
-        if not image_instance.label_mask:
-            print("No label mask available for WhiteFillRotatedRectFilter.")
-            return
-
-        # 1) 画像を一律で RGB 化 (もしくは RGBA 化したければ適宜変更)
-        if image_instance.image.mode != "RGB":
-            image_instance.image = image_instance.image.convert("RGB")
-
-        # 2) ラベルマスクをグレースケール(L)にして numpy配列化
-        mask_gray = image_instance.label_mask.convert("L")
-        mask_array = np.array(mask_gray, dtype=np.uint8)
-
-        # 3) 2値化
-        _, bin_mask = cv2.threshold(mask_array, 128, 255, cv2.THRESH_BINARY)
-
-        # 4) 輪郭を抽出 (最外輪郭のみ)
-        contours, _ = cv2.findContours(bin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # 5) 元画像を numpy配列 (H,W,3) に変換
-        img_array = np.array(image_instance.image)
-
-        # 6) 複数の輪郭に対して「回転してもいい最小外接長方形」を求め、塗りつぶし
-        for cnt in contours:
-            # 6-1) 回転を考慮した最小外接長方形を取得
-            #      minAreaRect() -> ((cx, cy), (width, height), angle)
-            rotated_rect = cv2.minAreaRect(cnt)
-
-            # 6-2) 長方形4頂点を取得 (float座標) → int型へ
-            box = cv2.boxPoints(rotated_rect)  # shape: (4,2)
-            box = np.int0(box)  # 整数に丸める
-
-            # 6-3) 得られた4頂点で多角形を塗りつぶし(= 白)
-            cv2.fillPoly(img_array, [box], (255, 255, 255))
-
-        # 7) 塗り終わった配列を PIL 画像に戻して image_instance.image を更新
-        image_instance.image = PILImage.fromarray(img_array, mode="RGB")
 
 import numpy as np
 import cv2

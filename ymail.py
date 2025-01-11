@@ -6,16 +6,11 @@ import time
 from dataclasses import dataclass
 from email.message import Message
 
-# from lib.auction import initialize_logger
-# logger = initialize_logger(log_file="mail.log")
-
-
 def safe_decode(value):
     """安全にデコードする関数"""
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="ignore")
     return value
-
 
 @dataclass
 class MailMessage:
@@ -28,18 +23,16 @@ class MailMessage:
     def from_email_message(uid: int, msg: Message) -> 'MailMessage':
         """
         email.message.Message オブジェクトから MailMessage インスタンスを作成する。
+        ここでは本文はまだ取得しない。
         """
         subject_decoded = decode_mime_header(msg.get("Subject"))
         from_decoded = decode_mime_header(msg.get("From"))
-        body_text = get_text_body(msg)
-
         return MailMessage(
             uid=uid,
             subject=subject_decoded,
             from_=from_decoded,
-            body=body_text
+            body=""  # 最初は空文字
         )
-
 
 def decode_mime_header(header_value: str) -> str:
     """
@@ -54,24 +47,19 @@ def decode_mime_header(header_value: str) -> str:
             try:
                 decoded_parts.append(part.decode(enc or "utf-8", errors="ignore"))
             except:
-                decoded_parts.append(part.decode("utf-8", errors="ignore"))  # フォールバック
+                decoded_parts.append(part.decode("utf-8", errors="ignore"))
         else:
-            # part は str の場合
             decoded_parts.append(part)
     return "".join(decoded_parts)
-
 
 def get_text_body(msg) -> str:
     """
     メールオブジェクトから text/plain の本文をすべて連結して返す。
-    マルチパートの場合に複数パートがある場合も想定。
     """
     if not msg.is_multipart():
-        # シンプルなメールの場合
         payload = msg.get_payload(decode=True)
         return payload.decode("utf-8", errors="ignore") if payload else ""
 
-    # マルチパートの場合
     body_parts = []
     for part in msg.walk():
         if part.get_content_type() == "text/plain":
@@ -96,25 +84,14 @@ class IMAPNewMailCheckerByUID:
         port: int = 993,
         poll_interval: int = 60
     ):
-        """
-        :param email_address: ログインに使用するメールアドレス
-        :param password: ログインに使用するパスワード (アプリパスワード推奨)
-        :param server: IMAP サーバーのアドレス (Yahooなら 'imap.mail.yahoo.co.jp')
-        :param port: IMAP サーバーのポート (既定: 993)
-        :param poll_interval: ポーリングでチェックする間隔 (秒)
-        """
         self.email_address = email_address
         self.password = password
         self.server = server
         self.port = port
         self.poll_interval = poll_interval
-
-        self.mail = None  # imaplib.IMAP4_SSL のインスタンス
-
-        # これより大きい UID のメールだけを検索する
-        self.last_uid = 0  # まだ取得していない場合は 0 にしておく
-
-        self.callbacks = []  # 登録されたコールバックを保持するリスト
+        self.mail = None
+        self.last_uid = 0
+        self.callbacks = []
 
     def connect(self):
         """IMAP サーバーに接続して認証を行う。"""
@@ -122,10 +99,7 @@ class IMAPNewMailCheckerByUID:
             self.mail = imaplib.IMAP4_SSL(self.server, self.port)
             self.mail.login(self.email_address, self.password)
             self.mail.select("INBOX")
-            # logger.debug("IMAPサーバーに接続しました。")
-
         except Exception as e:
-            # logger.debug(f"IMAP接続中にエラーが発生しました: {e}")
             self.mail = None
 
     def close(self):
@@ -140,7 +114,6 @@ class IMAPNewMailCheckerByUID:
             except:
                 pass
             self.mail = None
-            # logger.debug("IMAPサーバーから切断しました。")
 
     def _get_current_max_uid(self) -> int:
         """
@@ -156,26 +129,25 @@ class IMAPNewMailCheckerByUID:
     def fetch_new_messages(self):
         """
         前回取得した最大 UID (self.last_uid) より新しいメールを取得し、
-        (msg_uid, Messageオブジェクト) のリストを返す。
+        (ヘッダだけ埋まった) MailMessage のリストを返す。
         """
         if not self.mail:
             return []
         self.connect()
         criteria = f"UID {self.last_uid}:*"
-        # logger.debug(f"検索クエリ: {criteria}")
         typ, data = self.mail.uid('search', None, criteria)
         if typ != "OK" or not data or not data[0]:
             return []
 
         new_uids = data[0].split()  # [b'102', b'103', ...]
         new_messages = []
-
         for uid_bytes in new_uids:
             uid = int(uid_bytes)
             if uid <= self.last_uid:
                 continue
-            # メール本体取得 (RFC822 は本文も含め全体を取得)
-            typ2, msg_data = self.mail.uid('fetch', uid_bytes, '(RFC822)')
+
+            # ヘッダだけ取得
+            typ2, msg_data = self.mail.uid('fetch', str(uid), '(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])')
             if typ2 == "OK":
                 for response_part in msg_data:
                     if isinstance(response_part, tuple):
@@ -185,12 +157,30 @@ class IMAPNewMailCheckerByUID:
 
         return new_messages
 
+    def fetch_body(self, uid: int) -> str:
+        """
+        指定した UID のメール本文を取得して返す。
+        """
+        if not self.mail:
+            self.connect()
+            if not self.mail:
+                return ""
+
+        typ, msg_data = self.mail.uid('fetch', str(uid), '(RFC822)')
+        if typ == 'OK' and msg_data:
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    raw_email = response_part[1]
+                    msg = email.message_from_bytes(raw_email)
+                    return get_text_body(msg)
+        return ""
+
     def register_callback(
         self,
         from_pattern: str = None,
         subject_pattern: str = None,
         body_pattern: str = None,
-        callback = None
+        callback=None
     ):
         """
         新しいコールバックを登録する。
@@ -213,85 +203,79 @@ class IMAPNewMailCheckerByUID:
     def check_and_run_callback(self):
         """
         新しいメール(UIDベース)を取得し、登録されたすべてのコールバック条件に対してチェックし、
-        条件にマッチしたら対応するコールバックを呼ぶ。
+        条件にマッチしたら本文を取得したうえでコールバックを呼ぶ (本文つきの MailMessage を渡す)。
+        
+        ※ ここがポイント:
+          - body_pattern がある場合は本文をチェック
+          - body_pattern が「ない」場合も自動的に本文マッチとみなし、本文を取得してコールバックに渡す。
         """
         new_msgs = self.fetch_new_messages()
-        max_uid_in_batch = self.last_uid  # 今回取得した中で最も大きい UID を確認するための変数
-        # logger.debug(f"last UID: {self.last_uid}")
+        max_uid_in_batch = self.last_uid
 
         for mail_msg in new_msgs:
-            # 各登録されたコールバックに対してチェック
+            body_fetched = False  # このメールの本文はまだ取得していない
+
             for cb in self.callbacks:
-                if self._match_all(
-                    cb['from_regex'],
-                    cb['subject_regex'],
-                    cb['body_regex'],
-                    mail_msg.from_,
-                    mail_msg.subject,
-                    mail_msg.body
-                ):
-                    if cb['callback']:
-                        cb['callback'](mail_msg)
+                # 1) FROM が指定＆マッチするか
+                if cb['from_regex'] and not cb['from_regex'].search(mail_msg.from_):
+                    continue
+
+                # 2) SUBJECT が指定＆マッチするか
+                if cb['subject_regex'] and not cb['subject_regex'].search(mail_msg.subject):
+                    continue
+
+                # 3) body_pattern があるかないかで分岐
+                #    - ある → 本文を fetch してパターンマッチを確認
+                #    - ない → 自動的にマッチ扱いだが、callback に本文つき MailMessage を渡す必要があるので、本文を fetch
+                if cb['body_regex'] is not None:
+                    # body_pattern が存在する → チェックする
+                    if not body_fetched:
+                        mail_msg.body = self.fetch_body(mail_msg.uid)
+                        body_fetched = True
+
+                    if not cb['body_regex'].search(mail_msg.body):
+                        continue  # 本文マッチしないので次の callback へ
+                else:
+                    # body_pattern が存在しない → 自動的に本文マッチ扱い
+                    if not body_fetched:
+                        mail_msg.body = self.fetch_body(mail_msg.uid)
+                        body_fetched = True
+
+                # ここまで来たら「すべての条件」をクリア
+                if cb['callback']:
+                    cb['callback'](mail_msg)
 
             if mail_msg.uid > max_uid_in_batch:
                 max_uid_in_batch = mail_msg.uid
 
-        # 今回取得したメールの中で最大の UID を記録し、次回以降に重複取得しないようにする
         if max_uid_in_batch > self.last_uid:
             self.last_uid = max_uid_in_batch
-            # logger.debug(f"次の検索UID: {self.last_uid}")
-
-
-    @staticmethod
-    def _match_all(from_regex, subject_regex, body_regex, from_, subject, body):
-        """
-        送信元、件名、本文に対応する正規表現が None でなければ検索し、
-        すべてマッチしたら True を返す。
-        """
-        if from_regex and not from_regex.search(from_):
-            return False
-        if subject_regex and not subject_regex.search(subject):
-            return False
-        if body_regex and not body_regex.search(body):
-            return False
-        return True
 
     def run(self, include_last_n=0):
         """
         登録されたすべてのコールバックを処理する。
-        :param include_last_n: 初回に含める最後のN件のメール
+        :param include_last_n: 初回に含める最後のN件のメールを含める
         """
         self.connect()
-
-        # 初回の最大 UID を取得
-        self.last_uid = self._get_current_max_uid() - include_last_n
-        # logger.debug(f"max uid: {self.last_uid}")
+        current_max_uid = self._get_current_max_uid()
+        self.last_uid = max(0, current_max_uid - include_last_n)
 
         if not self.mail:
-            # logger.error("接続に失敗したため、終了します。")
             return
 
-        # logger.info("=== ポーリング開始 (UID ベースで最新メールのみ取得) ===")
         try:
             while True:
                 try:
                     self.check_and_run_callback()
-                except imaplib.IMAP4.abort as e:
-                    # logger.error(f"IMAP セッションが切断されました: {e}")
-                    # 一旦クローズして再度接続を試みる
+                except imaplib.IMAP4.abort:
+                    # 接続切れをリカバリ
                     self.close()
                     time.sleep(5)
                     self.connect()
                     if not self.mail:
-                        # logger.error("再接続に失敗したため終了します。")
                         break
                 time.sleep(self.poll_interval)
-
         except KeyboardInterrupt:
-            # logger.error("\nユーザが中断しました。")
             pass
-
         finally:
             self.close()
-            # logger.debug("=== ポーリング終了 ===")
-
