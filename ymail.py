@@ -3,8 +3,9 @@ import email
 from email.header import decode_header
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import Message
+from typing import List, Optional
 
 def safe_decode(value):
     """安全にデコードする関数"""
@@ -13,25 +14,44 @@ def safe_decode(value):
     return value
 
 @dataclass
+class Attachment:
+    filename: str
+    content_type: str
+    size: int
+
+@dataclass
 class MailMessage:
     uid: int
     subject: str
     from_: str
-    body: str
+    to: str
+    date: str
+    message_id: str
+    cc: Optional[str] = ""
+    body: str = ""
+    attachments: List[Attachment] = field(default_factory=list)
 
     @staticmethod
     def from_email_message(uid: int, msg: Message) -> 'MailMessage':
         """
         email.message.Message オブジェクトから MailMessage インスタンスを作成する。
-        ここでは本文はまだ取得しない。
+        ここでは本文や添付ファイルはまだ取得しない。
         """
         subject_decoded = decode_mime_header(msg.get("Subject"))
         from_decoded = decode_mime_header(msg.get("From"))
+        to_decoded = decode_mime_header(msg.get("To"))
+        date_decoded = decode_mime_header(msg.get("Date"))
+        message_id_decoded = decode_mime_header(msg.get("Message-ID"))
+        cc_decoded = decode_mime_header(msg.get("Cc"))
+
         return MailMessage(
             uid=uid,
             subject=subject_decoded,
             from_=from_decoded,
-            body=""  # 最初は空文字
+            to=to_decoded,
+            date=date_decoded,
+            message_id=message_id_decoded,
+            cc=cc_decoded
         )
 
 def decode_mime_header(header_value: str) -> str:
@@ -62,12 +82,25 @@ def get_text_body(msg) -> str:
 
     body_parts = []
     for part in msg.walk():
-        if part.get_content_type() == "text/plain":
+        if part.get_content_type() == "text/plain" and not part.get_filename():
             payload = part.get_payload(decode=True)
             if payload:
                 body_parts.append(payload.decode("utf-8", errors="ignore"))
     return "".join(body_parts)
 
+def get_attachments(msg) -> List[Attachment]:
+    """
+    メールオブジェクトから添付ファイル情報を抽出してリストで返す。
+    """
+    attachments = []
+    for part in msg.walk():
+        if part.get_content_disposition() == 'attachment':
+            filename = decode_mime_header(part.get_filename())
+            content_type = part.get_content_type()
+            payload = part.get_payload(decode=True)
+            size = len(payload) if payload else 0
+            attachments.append(Attachment(filename=filename, content_type=content_type, size=size))
+    return attachments
 
 class IMAPNewMailCheckerByUID:
     """
@@ -100,6 +133,7 @@ class IMAPNewMailCheckerByUID:
             self.mail.login(self.email_address, self.password)
             self.mail.select("INBOX")
         except Exception as e:
+            print(f"Connection failed: {e}")
             self.mail = None
 
     def close(self):
@@ -126,7 +160,7 @@ class IMAPNewMailCheckerByUID:
         int_uids = [int(x) for x in uid_list]
         return max(int_uids) if int_uids else 0
 
-    def fetch_new_messages(self):
+    def fetch_new_messages(self) -> List[MailMessage]:
         """
         前回取得した最大 UID (self.last_uid) より新しいメールを取得し、
         (ヘッダだけ埋まった) MailMessage のリストを返す。
@@ -134,7 +168,9 @@ class IMAPNewMailCheckerByUID:
         if not self.mail:
             return []
         self.connect()
-        criteria = f"UID {self.last_uid}:*"
+        if not self.mail:
+            return []
+        criteria = f"UID {self.last_uid + 1}:*"
         typ, data = self.mail.uid('search', None, criteria)
         if typ != "OK" or not data or not data[0]:
             return []
@@ -147,24 +183,25 @@ class IMAPNewMailCheckerByUID:
                 continue
 
             # ヘッダだけ取得
-            typ2, msg_data = self.mail.uid('fetch', str(uid), '(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])')
+            typ2, msg_data = self.mail.uid('fetch', str(uid), '(BODY.PEEK[HEADER])')
             if typ2 == "OK":
                 for response_part in msg_data:
                     if isinstance(response_part, tuple):
                         raw_email = response_part[1]
                         msg = email.message_from_bytes(raw_email)
-                        new_messages.append(MailMessage.from_email_message(uid, msg))
+                        mail_msg = MailMessage.from_email_message(uid, msg)
+                        new_messages.append(mail_msg)
 
         return new_messages
 
-    def fetch_body(self, uid: int) -> str:
+    def fetch_body_and_attachments(self, uid: int, mail_msg: MailMessage):
         """
-        指定した UID のメール本文を取得して返す。
+        指定した UID のメール本文と添付ファイル情報を取得して MailMessage に設定する。
         """
         if not self.mail:
             self.connect()
             if not self.mail:
-                return ""
+                return
 
         typ, msg_data = self.mail.uid('fetch', str(uid), '(RFC822)')
         if typ == 'OK' and msg_data:
@@ -172,8 +209,9 @@ class IMAPNewMailCheckerByUID:
                 if isinstance(response_part, tuple):
                     raw_email = response_part[1]
                     msg = email.message_from_bytes(raw_email)
-                    return get_text_body(msg)
-        return ""
+                    mail_msg.body = get_text_body(msg)
+                    mail_msg.attachments = get_attachments(msg)
+                    break
 
     def register_callback(
         self,
@@ -203,7 +241,7 @@ class IMAPNewMailCheckerByUID:
     def check_and_run_callback(self):
         """
         新しいメール(UIDベース)を取得し、登録されたすべてのコールバック条件に対してチェックし、
-        条件にマッチしたら本文を取得したうえでコールバックを呼ぶ (本文つきの MailMessage を渡す)。
+        条件にマッチしたら本文と添付ファイルを取得したうえでコールバックを呼ぶ (本文つきの MailMessage を渡す)。
         
         ※ ここがポイント:
           - body_pattern がある場合は本文をチェック
@@ -230,7 +268,7 @@ class IMAPNewMailCheckerByUID:
                 if cb['body_regex'] is not None:
                     # body_pattern が存在する → チェックする
                     if not body_fetched:
-                        mail_msg.body = self.fetch_body(mail_msg.uid)
+                        self.fetch_body_and_attachments(mail_msg.uid, mail_msg)
                         body_fetched = True
 
                     if not cb['body_regex'].search(mail_msg.body):
@@ -238,7 +276,7 @@ class IMAPNewMailCheckerByUID:
                 else:
                     # body_pattern が存在しない → 自動的に本文マッチ扱い
                     if not body_fetched:
-                        mail_msg.body = self.fetch_body(mail_msg.uid)
+                        self.fetch_body_and_attachments(mail_msg.uid, mail_msg)
                         body_fetched = True
 
                 # ここまで来たら「すべての条件」をクリア
@@ -257,11 +295,10 @@ class IMAPNewMailCheckerByUID:
         :param include_last_n: 初回に含める最後のN件のメールを含める
         """
         self.connect()
-        current_max_uid = self._get_current_max_uid()
-        self.last_uid = max(0, current_max_uid - include_last_n)
-
         if not self.mail:
             return
+        current_max_uid = self._get_current_max_uid()
+        self.last_uid = max(0, current_max_uid - include_last_n)
 
         try:
             while True:
