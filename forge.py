@@ -179,7 +179,12 @@ class ForgeAPI:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-
+        self.models = [None]
+        self.samplers = [None]
+        self.embeddings = [None]
+        self.upscalers = [None]
+        self.loras = [None]
+        self.extensions = [None]
         if openapi_path:
             self.load_openapi(openapi_path)
 
@@ -370,7 +375,7 @@ class ForgeAPI:
         prompt_spec = r["prompt_spec"]
         options = r.get("options",
         {
-            "sd_model_checkpoint": self.models[0],
+            "sd_model_checkpoint": self.models[0] or None,
             "CLIP_stop_at_last_layers" : 2,
         })
         data["seed"] = r["info"]["seed"]

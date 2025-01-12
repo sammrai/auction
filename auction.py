@@ -231,26 +231,6 @@ PREVIEW_TEMPLATE = {
 #     return cookie_dict
 
 
-def parse_cookie_string(cookies_list):
-    """
-    Parse a cookie string into a dictionary.
-
-    Args:
-        cookie_string (str): Cookie string in standard format.
-
-    Returns:
-        dict: Parsed cookie as a dictionary.
-    """
-    session = requests.Session()
-    for cookie in cookies_list:
-        session.cookies.set(
-            cookie['name'],
-            cookie['value'],
-            domain=cookie['domain'],
-            path=cookie['path']
-        )
-    return session.cookies
-
 
 def post_img(file_path, headers, cookies, img_crumb, ):
     url = 'https://auctions.yahoo.co.jp/img/images/new'
@@ -454,6 +434,27 @@ def load_config(file_path):
 def save_config(file_path, config, yaml):
     with open(file_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f)
+
+
+def parse_cookie_string(cookies_list):
+    """
+    Parse a cookie string into a dictionary.
+
+    Args:
+        cookie_string (str): Cookie string in standard format.
+
+    Returns:
+        dict: Parsed cookie as a dictionary.
+    """
+    session = requests.Session()
+    for cookie in cookies_list:
+        session.cookies.set(
+            cookie['name'],
+            cookie['value'],
+            domain=cookie['domain'],
+            path=cookie['path']
+        )
+    return session.cookies
 
 
 def serialize_cookies(cookies):
@@ -950,7 +951,7 @@ class YahooAuctionTrade():
         # GETリクエスト
         time.sleep(SLEEP_TIME)  # スリープを追加
         logger.info(f"get status {url}")
-        response = self.session.get(url, headers=headers, allow_redirects=False)
+        response = self.session.get(url, headers=headers, allow_redirects=True)
         assert response.status_code == 200, f"{response.status_code, response.text, response.headers}"
         
         # return response
@@ -1428,6 +1429,18 @@ class YahooAuctionTrade():
         assert response.status_code == 200, f"{response.status_code, response.text}"
         return response
 
+    def accept_omatome(self, url):
+        status, is_matome, values, matome_accept_url = self.get_status(url)
+        if matome_accept_url:
+            values1 = self.get_ship_preview(matome_accept_url)
+            time.sleep(10)
+            values2 = self.post_ship_preview(url, values1['seller/bundle/shippreview/_crumb'])
+            time.sleep(10)
+            ret_submit = self.post_ship_submit(url, values2['seller/bundle/shipsubmit/_crumb'])    
+            time.sleep(10)
+            return True
+        else:
+            return False
 
 def calculate_chunks_length(total_length, max_size=23):
     return math.ceil(total_length / max_size)
