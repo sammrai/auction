@@ -1,13 +1,18 @@
-import os
-import time
-from contextlib import contextmanager
+from datetime import datetime
+from lib.image_meta import get_meta, extract_metadata
 from lib.lambda_cloud import LambdaCloudController
 from lib.ssh_client import SSHClient, convert_to_oneline_echo
-
-from datetime import datetime
+from requests.exceptions import HTTPError
 import concurrent.futures
-from lib.image_meta import get_meta, extract_metadata
+import os
 import piexif
+import time
+import re
+from lib.nudenet import NudeDetector, save_labeled_image
+
+from IPython.core.interactiveshell import InteractiveShell
+InteractiveShell.showtraceback = InteractiveShell.showsyntaxerror
+
 
 class ForgeResource:
     def __init__(self, lambda_cloud_secret, cloudflare_tunnel_token, civitai_token, model_config="./civitdl/models.yml"):
@@ -31,7 +36,7 @@ class ForgeResource:
     def __exit__(self, exc_type, exc_value, traceback):
         self._teardown_instance()
 
-    def _setup_instance(self):
+    def _setup_instance(self, is_forge_install=True):
         self.key, instance = self.lc.launch_instance_wait_auto()
         self.instance = instance[0]
         self.start_time = datetime.now()  # 開始時刻を記録
@@ -45,8 +50,9 @@ class ForgeResource:
         self.ssh_client = SSHClient(**args)
         self.ssh_client.connect()
 
-        print("setting up environment...")
-        self._setup_environment()
+        if is_forge_install: 
+            print("setting up forge")
+            self._setup_environment()
 
     def _setup_environment(self):
         
@@ -67,16 +73,6 @@ class ForgeResource:
         """
         self.ssh_client.cmd(cmd)
 
-    def civitdl(self, model_id, model_type, name=None):
-        valid_model_types = ['lora', 'vae', 'embed', 'checkpoint']
-        
-        # Check if model_type is valid
-        if model_type not in valid_model_types:
-            raise ValueError(f"Invalid model type: {model_type}. Valid options are: {', '.join(valid_model_types)}.")
-        
-        # Execute the docker command if model_type is valid
-        self.ssh_client.cmd(f"cd sd-forge-docker && sudo docker compose exec webui civitdl {model_id} @{model_type}")
-        return model_id, model_type
 
     def _teardown_instance(self):
         if self.ssh_client:
@@ -112,39 +108,49 @@ class ForgeResource:
     def _all_delete(self):
         self.lc.delete_all_resources()
 
-    def civitdl_parallel(self, models, max_workers=3):
-        """
-        ダウンロード済みのモデルをスキップしながら、モデルを並列にダウンロードします。
-        
-        Args:
-            models (list): ダウンロードするモデルのリスト。各モデルは辞書形式で 'model_id' と 'model_type' を含む。
-            max_workers (int): 並列実行の最大ワーカー数。
-        """
+    def civitdl_parallel(self, models, max_workers=3, force=False):
+        self.ssh_client.connect()
+        if force:
+            self.downloaded_models.clear()
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # ダウンロードが必要なモデルをフィルタリング
-            models_to_download = [
-                model for model in models
-                if (model['model_id'], model['model_type']) not in self.downloaded_models
-            ]
-            
-            # スキップされたモデルの通知
-            for model in models:
-                if (model['model_id'], model['model_type']) in self.downloaded_models:
-                    print(f"Skipping already downloaded model: ID={model['model_id']}, Type={model['model_type']}")
-            
-            # 並列でモデルをダウンロード
             futures = [
                 executor.submit(self.civitdl, model['model_id'], model['model_type'], model.get('name'))
-                for model in models_to_download
+                for model in models
             ]
-            
-            # 進捗バーを表示しながら結果を処理
-            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Downloading models"):
-                try:
-                    model_id, model_type = future.result()  # civitdl が (model_id, model_type) を返すと仮定
-                    self.downloaded_models.add((model_id, model_type))
-                except Exception as exc:
-                    print(f"Model download failed: {exc}")
+            try:
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="Downloading models"
+                ):
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        print(f"Model download failed: {exc}")
+
+            except KeyboardInterrupt:
+                print("KeyboardInterrupt detected. Cancelling all threads...")
+                # ここで全ての未完了タスクをキャンセル
+                for f in futures:
+                    f.cancel()
+                # raise しないと以降のコードを止められないので再度送出
+                raise
+
+    def civitdl(self, model_id, model_type, name=None):
+        if (model_id, model_type) in self.downloaded_models:
+            return model_id, model_type
+        valid_model_types = ['lora', 'vae', 'embed', 'checkpoint']
+        
+        # Check if model_type is valid
+        if model_type not in valid_model_types:
+            raise ValueError(f"Invalid model type: {model_type}. Valid options are: {', '.join(valid_model_types)}.")
+        
+        # Execute the docker command if model_type is valid
+        ret = self.ssh_client.cmd(f"cd sd-forge-docker && sudo docker compose exec webui civitdl {model_id} @{model_type}")
+        self.downloaded_models.add((model_id, model_type))
+        return model_id, model_type
+
     def install_plugin(self, url):
         repo_name = url.rstrip('/').split('/')[-1].removesuffix('.git')
         path = f"/app/data/extensions/{repo_name}"
@@ -187,6 +193,8 @@ class ForgeAPI:
         self.extensions = [None]
         if openapi_path:
             self.load_openapi(openapi_path)
+        self.wait_until_startup()
+        self.nude_detector = NudeDetector("models/640m.onnx")
 
     def _request(self, method, endpoint, **kwargs):
         """
@@ -292,6 +300,19 @@ class ForgeAPI:
         # メソッドをクラスに追加
         setattr(self, method_name, api_method)
 
+    def wait_until_startup(self, max_retries=60, delay=1):
+        for _ in range(max_retries):
+            try:
+                self.get_sdapi_v1_options()
+                return 
+            except HTTPError:
+                time.sleep(delay)
+        raise RuntimeError("Maximum retries reached for forge.get_sdapi_v1_options()")
+
+    def restart(self):
+        self.post_sdapi_v1_server_restart()
+        self.wait_until_startup()
+
     def reload_models(self):
         self.post_sdapi_v1_reload_checkpoint()
         self.post_sdapi_v1_refresh_checkpoints()
@@ -365,35 +386,129 @@ class ForgeAPI:
         
         return data, options, lora_options, []
 
-
     def img2param(self, img_path):
-        r = (extract_metadata(img_path))
-        if "parameters" not in r:
-            # civitai image
+        metadata = extract_metadata(img_path)
+        
+        if "parameters" not in metadata:
+            # Civitai画像の場合
             return self.civitai2forge_param(img_path)
-        data = r["parameters"]
-        prompt_spec = r["prompt_spec"]
-        options = r.get("options",
-        {
-            "sd_model_checkpoint": self.models[0] or None,
-            "CLIP_stop_at_last_layers" : 2,
+        
+        parameters = metadata["parameters"]
+        prompt_spec = metadata.get("prompt_spec", "")
+        options = metadata.get("options", {
+            "sd_model_checkpoint": self.models[0] if self.models else None,
+            "CLIP_stop_at_last_layers": 2,
         })
-        data["seed"] = r["info"]["seed"]
-        return data, options, {}, prompt_spec
 
-    def gen(self, _data, options, lora_options={}, dpi=50, output_dir="./generated", exif={}, show_image=False):
+        # `sd_model_checkpoint` の正しい参照を確認
+        options["sd_model_checkpoint"] = self._resolve_model_checkpoint(options.get("sd_model_checkpoint", ""))
+        
+        # LoRA パラメータの抽出と検証
+        prompt, loras = self._extract_and_validate_loras(parameters.get("prompt", ""))
+        
+        parameters["prompt"] = prompt
+        parameters["seed"] = metadata["info"].get("seed")
+        
+        return parameters, options, loras, prompt_spec
+
+    def _resolve_model_checkpoint(self, checkpoint):
+        if checkpoint in self.models:
+            return checkpoint
+        
+        # ハッシュを除去して一致をチェック
+        base_name = re.sub(r" \[.*\]$", "", checkpoint)
+        
+        matched_model = next((model for model in self.models if model.startswith(base_name)), None)
+        
+        if not matched_model:
+            print(f"警告: モデル '{checkpoint}' が見つかりません。デフォルトモデル '{self.models[0]}' を使用します。")
+            return self.models[0]
+        
+        return matched_model
+
+    def _extract_and_validate_loras(self, prompt):
+        lora_pattern = r'<lora:([^:]+):([\d.]+)>'
+        lora_matches = re.findall(lora_pattern, prompt)
+        loras = {name: float(weight) for name, weight in lora_matches}
+        
+        lora_aliases = {lora["alias"] for lora in self.loras}
+        missing_loras = [name for name in loras if name not in lora_aliases]
+        
+        if missing_loras:
+            raise ValueError(f"Missing LoRA aliases: {missing_loras}")
+        
+        # LoRA の部分をプロンプトから削除
+        cleaned_prompt = re.sub(lora_pattern, "", prompt).strip(", ")
+        
+        return cleaned_prompt, loras
+
+    def gen(self, *args, **kwargs):
+        try:
+            return self._gen(*args, **kwargs)
+        except KeyboardInterrupt:
+            print("処理を中止します")
+            self.post_sdapi_v1_interrupt()
+            # 元の例外との関連付けを削除
+            raise UserWarning("処理を中止しました") from None
+
+    def _gen(self, _data, options,
+            lora_options={},
+            dpi=50,
+            output_dir="./generated",
+            exif={},
+            show_image=False,
+            hr=False,
+            aspect="v",
+            adetailer="person",
+            enable_masking=False,
+        ):
         """
         入力データに基づいて画像を生成し、表示および保存します。
         data: 画像生成用のデータ（バッチサイズに応じて複数の画像を生成）
         """
+        assert aspect in ["v", "h"]
+        data = {
+            "steps": 20,
+            "negative_prompt": "text, lips",
+        	# "sampler_index":"Euler A",
+        	"sampler_index":"DPM++ 2M Karras",
+        	"width": 832,
+        	"height": 1216,
+        	# "width": 256,
+        	# "height": 384,
+        	"cfg_scale": 7,
+        	"seed": -1,
+            "batch_size": 1,
+
+            # upscale
+            "enable_hr":hr,
+        	"hr_scale": 2,
+        	"hr_upscaler": "Lanczos",
+            "denoising_strength":0.5,
+            "hr_additional_modules": [],
+        }
+        if aspect == "h":
+            data["height"], data["width"] = data["width"], data["height"]
+
+        if adetailer == "person":
+            data["alwayson_scripts"] = adetailer_person
+        elif adetailer == "face":
+            data["alwayson_scripts"] = adetailer_face
+        else:
+            data["alwayson_scripts"] = None
+
         # APIへのオプション送信
-        self.post_sdapi_v1_options(json=options)
-        
+        # optionが違う時に送信する
+        current_optons = self.get_sdapi_v1_options()
+        if not all(current_optons[k] == options[k] for k in current_optons.keys() & options.keys()):
+            print("###")
+            self.post_sdapi_v1_options(json=options)
+
+        # プロンプトにLoRAオプションを追加
+        data.update(_data)
+
         # LoRAオプションの文字列化
         lora_str = ", " + ", ".join([f"<lora:{k}:{v}>" for k, v in lora_options.items()])
-        
-        # プロンプトにLoRAオプションを追加
-        data = _data.copy()
         data["prompt"] += lora_str
         
         # 生成画像の保存先ディレクトリを作成
@@ -412,6 +527,8 @@ class ForgeAPI:
         # 各画像を保存
         for i, img in enumerate(images):
             file_path = os.path.join(output_dir,f"{timestamp}_{i}.jpg")
+            base, ext = os.path.splitext(file_path)
+            labeled_file_path = f"{base}_label{ext}"
             
             # 画像データをデコード
             img_data = base64.b64decode(img)
@@ -437,7 +554,13 @@ class ForgeAPI:
             
             # 画像をJPEG形式で保存し、EXIFデータを埋め込む
             image.save(file_path, "JPEG", exif=exif_bytes, quality=95)
-        
+
+            if enable_masking:
+                predictions = self.nude_detector.detect(file_path)
+            else:
+                predictions = []
+            save_labeled_image(file_path, labeled_file_path, predictions)
+
         # 画像を横に並べて表示
         if show_image:
             show_images(images, dpi=dpi)

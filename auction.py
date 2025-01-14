@@ -800,6 +800,11 @@ class YahooAuctionTrade():
         self.session = requests.Session()
         self.session.cookies.update(initial_cookies)
         self.session.max_redirects = 2
+        # 過去のクッキーを保持しておき、保存の分岐に用いる
+        self._temp_cookies = self.session.cookies.copy()
+
+    def is_cookie_updated(self):
+        return self._temp_cookies != self.session.cookies
 
     def get_table(self, url, index_col=0, table_class='ItemTable', referer='https://auctions.yahoo.co.jp/user/jp/show/mystatus', apg=None):
         """

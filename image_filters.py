@@ -311,7 +311,7 @@ class YoloDatasetFilter(Filter):
             
             # 幾何学的変換
             A.ShiftScaleRotate(
-                shift_limit=0.0625,    # シフト範囲
+                shift_limit=0.1,    # シフト範囲
                 scale_limit=0.1,       # スケール変更範囲
                 rotate_limit=360,      # 任意角度の回転
                 border_mode=cv2.BORDER_REFLECT_101,  # 境界の補間方法
@@ -528,10 +528,9 @@ class YoloDatasetFilter(Filter):
                 bboxes_px = self._get_bboxes_from_mask(mask_arr, label_name)
                 all_bboxes_px.extend(bboxes_px)
 
-            # ★ もしバウンディングボックスが1つも無いなら終了
-                if len(all_bboxes_px) == 0:
-                    print("ラベル領域が一つもないため、データセット出力をスキップします。")
-                    return
+            if len(all_bboxes_px) == 0:
+                print("ラベル領域が一つもないため、データセット出力をスキップします。")
+                return
 
             # 画像サイズ
             img_h, img_w = aug_img_array.shape[:2]
