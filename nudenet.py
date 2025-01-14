@@ -408,6 +408,7 @@ def save_labeled_image(file_path, labeled_file_path, predictions, target_classes
 
     Args:
         file_path (str): 元画像のファイルパス。
+        labeled_file_path (str): 保存先のファイルパス（PNG形式）。
         predictions (list): 推論結果のリスト。
         target_classes (list): 塗りつぶし対象のクラスのリスト。
         show_image (bool): 画像を表示するかどうか（デフォルトはFalse）。
@@ -442,13 +443,24 @@ def save_labeled_image(file_path, labeled_file_path, predictions, target_classes
         # 塗りつぶし処理
         cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), color, thickness=-1)
 
+    # 長辺が600pxになるようにリサイズ
+    max_side = 600
+    img_height, img_width, _ = img.shape
+    if img_width > img_height:
+        new_width = max_side
+        new_height = int((max_side / img_width) * img_height)
+    else:
+        new_height = max_side
+        new_width = int((max_side / img_height) * img_width)
+    img_resized = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
-    cv2.imwrite(labeled_file_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    # PNG形式で保存
+    cv2.imwrite(labeled_file_path, cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR))
 
     # 画像表示（オプション）
     if show_image:
         plt.figure(figsize=(10, 10))
-        plt.imshow(img)
+        plt.imshow(img_resized)
         plt.axis('off')
         plt.show()
 
@@ -477,3 +489,38 @@ if __name__ == "__main__":
         )[1]
     )
     print(detector.detect_batch(["/Users/praneeth.bedapudi/Desktop/a.jpeg"])[0])
+
+
+# 推論結果を描画する関数
+def draw_predictions(file_path, predictions):
+    img = cv2.imread(file_path)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # OpenCVはBGRなのでRGBに変換
+    img_height, img_width, _ = img.shape
+
+    # 画像サイズに基づく調整パラメータ
+    line_thickness = max(1, min(img_width, img_height) // 300)  # 線幅
+    font_scale = max(0.5, min(img_width, img_height) / 1000)   # フォントサイズ
+
+    for pred in predictions:
+        # ラベルとスコア、バウンディングボックスを取得
+        cls_label = pred.get("class", "Unknown")  # クラスラベル
+        score = pred.get("score", 0)  # 信頼スコア
+        box = pred.get("box", [0, 0, 0, 0])  # バウンディングボックス [x, y, width, height]
+
+        # バウンディングボックスを描画する座標を計算
+        x1, y1, width, height = box
+        x2, y2 = x1 + width, y1 + height
+
+        # 色の選択（デフォルトは赤）
+        color = LABEL_COLORS.get(cls_label, (255, 0, 0))
+
+        # 描画処理
+        label = f"{cls_label}: {score:.2f}"
+        cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), color, line_thickness)
+        cv2.putText(img, label, (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, line_thickness)
+
+    # Jupyter Notebookで表示
+    plt.figure(figsize=(10, 10))
+    plt.imshow(img)
+    plt.axis('off')  # 軸を非表示
+    plt.show()

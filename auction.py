@@ -1459,7 +1459,7 @@ def generate_message(img_paths, navi_list):
     if len(navi_list) >= 2:
         navi_text = "・" + "\n・".join(navi_list)
         summary_message = f"""
-下記取引 {len(navi_list)} 件をまとめてご案内いたします。
+以下の取引 {len(navi_list)} 件まとめてのご案内となります。
 他の取引ナビでのご連絡は省略しておりますので、ご了承ください。
 
 {navi_text}
@@ -1469,12 +1469,15 @@ def generate_message(img_paths, navi_list):
 
     # メッセージを組み立て
     message = f"""
-ご購入およびお支払いありがとうございます。
-商品 {len(img_paths)} 件のプリントコードを発行しました。
+このたびはご購入およびお支払い、誠にありがとうございます。
+商品 {len(img_paths)} 件分のプリントコードを発行しました。
 {summary_message}
-本連絡をもって発送完了と代えさせていただきます。
-プリント後、受け取り連絡をお願いいたします。
-この度はお取引いただき、ありがとうございました！
+本連絡をもって発送完了のご案内とさせていただきます。
+プリント後は、お手数ですが受け取り連絡をお願いいたします。
+この度はお取引いただき、誠にありがとうございました！
+
+※商品の特性上、こちらからの評価は控えております。
+評価も不要ですので、どうぞご放念ください。
 
 {qrcode_image}
 {print_manual_image}

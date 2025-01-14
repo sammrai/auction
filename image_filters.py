@@ -739,6 +739,63 @@ class LabelBlurFilter(Filter):
 from PIL import Image as PILImage, ImageDraw, ImageFilter
 import numpy as np
 
+class FanzaMosaicFilter(Filter):
+    def __init__(self, mosaic_size_ratio=0.01, resample_method=PILImage.NEAREST):
+        """
+        Args:
+            mosaic_size_ratio (float): モザイクサイズの比率。デフォルトは0.01（1%）。
+                画像全体の長辺に対する割合でモザイクサイズを決定。
+                最小モザイクサイズは4ピクセル平方。
+            resample_method (int): PIL.Image のリサンプル方法。
+                デフォルトは PIL.Image.NEAREST
+        """
+        self.mosaic_size_ratio = mosaic_size_ratio
+        self.resample_method = resample_method
+
+    def apply(self, image_instance):
+        """
+        ラベル領域にのみモザイクを適用します。
+        """
+        if not image_instance.label_mask:
+            print("No label mask available for MosaicFilter.")
+            return
+
+        # モザイク処理を適用した画像を生成
+        mosaic_image = self._mosaic(image_instance.image)
+
+        # ラベルマスクを使用して、ラベル領域にのみモザイクを適用
+        image_instance.image = PILImage.composite(mosaic_image, image_instance.image, image_instance.label_mask)
+
+    def _mosaic(self, pil_image):
+        """
+        画像全体にモザイクを適用します。
+
+        Args:
+            pil_image (PIL.Image.Image): 入力画像
+
+        Returns:
+            PIL.Image.Image: モザイク処理済み画像
+        """
+        # 画像のサイズを取得
+        width, height = pil_image.size
+        long_edge = max(width, height)
+
+        # 規約に基づきモザイクサイズを計算
+        mosaic_size = max(4, int(long_edge * self.mosaic_size_ratio))  # 最小4ピクセル平方
+
+        # 縮小サイズを計算
+        mosaic_width = max(1, width // mosaic_size)
+        mosaic_height = max(1, height // mosaic_size)
+
+        # 画像を縮小（モザイクの粗さを決定）
+        small = pil_image.resize((mosaic_width, mosaic_height), resample=self.resample_method)
+
+        # 縮小した画像を元のサイズに拡大
+        mosaic = small.resize((width, height), resample=self.resample_method)
+
+        return mosaic
+
+    
 class MosaicFilter(Filter):
     def __init__(self, ratio=0.1, resample_method=PILImage.NEAREST):
         """
@@ -869,7 +926,7 @@ def process_images(file_list, override=False):
         image = MyImage(file_path, padding=3)
         
         # フィルタを順に適用して保存
-        image.apply_filter(MosaicFilter(ratio=0.1, resample_method=PILImage.BOX)) \
+        image.apply_filter(FanzaMosaicFilter(mosaic_size_ratio=0.003, resample_method=PILImage.BOX)) \
              .save("submission")
 
         # サンプル画像

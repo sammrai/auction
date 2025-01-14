@@ -528,7 +528,7 @@ class ForgeAPI:
         for i, img in enumerate(images):
             file_path = os.path.join(output_dir,f"{timestamp}_{i}.jpg")
             base, ext = os.path.splitext(file_path)
-            labeled_file_path = f"{base}_label{ext}"
+            labeled_file_path = f"{base}_label.png"
             
             # 画像データをデコード
             img_data = base64.b64decode(img)

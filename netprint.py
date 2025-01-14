@@ -223,7 +223,126 @@ def upload_image_to_imghippo(api_key, image, title=""):
         print(f"エラー: {e}")
         return None
 
-def img2url(files, hippo_api_key="f7342f8a581c9e66888914bd1fc2a105"):
+def edit_present_qrcode(qr_data, user_code, expire_date):
+    font_path = "./material/NotoSansCJK-Regular.ttc"  # 通常フォントのパス
+    font_path_bold = "./material/NotoSansCJK-Bold.ttc"  # 太文字フォントのパス
+    font_size1 = 14  # user_code 用のフォントサイズ
+    font_size2 = 17  # expire_date 用のフォントサイズ
+    font_size_header = 20  # プレゼントコード用フォントサイズ
+    padding = 20  # 画像の余白
+    text_padding = -20  # QRコードとテキスト間の余白
+    header_padding = 20  # 上部テキスト用の余白
+    header_height = 40  # ヘッダーエリアの高さ
+    corner_radius = 20  # 丸角の半径
+    border_size = 6  # 枠線の厚さ
+    text_color = (0, 0, 0, 255)  # テキスト色（黒）
+    fill_color = (255, 255, 255, 255)  # 塗りつぶし色（白）
+    text_header_color = fill_color
+    
+    # --- フォントの読み込み ---
+    font1 = ImageFont.truetype(font_path, font_size1)  # user_code 用フォント
+    font2 = ImageFont.truetype(font_path, font_size2)  # expire_date 用フォント
+    font_header = ImageFont.truetype(font_path_bold, font_size_header)  # 上部テキスト用フォント
+    
+    # --- テキストの準備 ---
+    text_header = "プレゼント コード"
+    text_header = "いつもご利用ありがとうございます"
+    text1 = user_code
+    text2 = f"プリント期限　 {expire_date}"
+    
+    # --- テキストサイズの計測 ---
+    dummy_img = Image.new("RGB", (1, 1))
+    draw_dummy = ImageDraw.Draw(dummy_img)
+    
+    bbox_header = draw_dummy.textbbox((0, 0), text_header, font=font_header)
+    text_width_header = bbox_header[2] - bbox_header[0]
+    text_height_header = bbox_header[3] - bbox_header[1]
+    
+    bbox1 = draw_dummy.textbbox((0, 0), text1, font=font1)
+    text_width1 = bbox1[2] - bbox1[0]
+    text_height1 = bbox1[3] - bbox1[1]
+    
+    bbox2 = draw_dummy.textbbox((0, 0), text2, font=font2)
+    text_width2 = bbox2[2] - bbox2[0]
+    text_height2 = bbox2[3] - bbox2[1]
+    
+    # --- サイズ計算 ---
+    qr_width, qr_height = qr_data.size
+    content_width = max(qr_width, text_width1, text_width2, text_width_header)
+    content_height = (
+        header_height  # ヘッダーエリアの高さ
+        + qr_height
+        + text_padding
+        + text_height1
+        + text_height2
+    )
+    new_width = content_width + padding * 2 + border_size * 2
+    new_height = content_height + padding * 2 + border_size * 2
+    
+    # --- 背景グラデーションを作成 ---
+    gradient = Image.new("RGBA", (new_width, new_height))
+    draw_gradient = ImageDraw.Draw(gradient)
+    start_color = (100, 125, 245)  # #647DF5
+    end_color = (65, 192, 217)    # #41C0D9
+    for x in range(new_width):
+        ratio = x / new_width
+        r = int(start_color[0] * (1 - ratio) + end_color[0] * ratio)
+        g = int(start_color[1] * (1 - ratio) + end_color[1] * ratio)
+        b = int(start_color[2] * (1 - ratio) + end_color[2] * ratio)
+        draw_gradient.line([(x, 0), (x, new_height)], fill=(r, g, b, 255))
+    
+    # --- 枠線用マスクを作成 ---
+    mask = Image.new("L", (new_width, new_height), 0)
+    draw_mask = ImageDraw.Draw(mask)
+    draw_mask.rounded_rectangle(
+        [(0, 0), (new_width, new_height)],
+        corner_radius,
+        fill=255
+    )
+    gradient.putalpha(mask)
+    
+    # --- 内側の白い塗りつぶしを作成 ---
+    inner_width = new_width - 2 * border_size
+    inner_height = new_height - 2 * border_size - header_height  # ヘッダー分高さを減らす
+    inner_image = Image.new("RGBA", (inner_width, inner_height), fill_color)
+    mask_inner = Image.new("L", (inner_width, inner_height), 0)
+    draw_inner = ImageDraw.Draw(mask_inner)
+    draw_inner.rounded_rectangle(
+        [(0, 0), (inner_width, inner_height)],
+        corner_radius - border_size,  # 内側の角半径を調整
+        fill=255
+    )
+    inner_image.putalpha(mask_inner)
+    
+    # --- 内側の白い塗りつぶしを貼り付け ---
+    gradient.paste(inner_image, (border_size, header_height + border_size), inner_image)
+    
+    # --- QRコードを中央に貼り付け ---
+    qr_x = (new_width - qr_width) // 2
+    qr_y = header_height + padding + border_size
+    gradient.paste(qr_data, (qr_x, qr_y), qr_data)
+    
+    # --- テキストを描画 ---
+    draw = ImageDraw.Draw(gradient)
+    
+    # ヘッダーエリア
+    text_header_x = (new_width - text_width_header) // 2
+    text_header_y = (header_height - text_height_header) // 2
+    draw.text((text_header_x, text_header_y), text_header, font=font_header, fill=text_header_color)
+    
+    # ユーザーコード
+    text1_x = (new_width - text_width1) // 2
+    text1_y = qr_y + qr_height + text_padding
+    draw.text((text1_x, text1_y), text1, font=font1, fill=text_color)
+    
+    # 期限
+    text2_x = (new_width - text_width2) // 2
+    text2_y = text1_y + text_height1 + 10
+    draw.text((text2_x, text2_y), text2, font=font2, fill=text_color)
+    
+    return gradient
+
+def img2url_present(files, hippo_api_key="f7342f8a581c9e66888914bd1fc2a105"):
     assert len(files) < 24
     auth_token = authenticate()
     token = auth_token["authToken"]
@@ -243,7 +362,7 @@ def img2url(files, hippo_api_key="f7342f8a581c9e66888914bd1fc2a105"):
     qr_data = qr_data.convert("RGBA")
     
     # QRコード編集
-    new_image = edit_qrcode(qr_data, usercode, expire_date)
+    new_image = edit_present_qrcode(qr_data, usercode, expire_date)
     
     # JSONデータ作成と保存
     json_data = {
