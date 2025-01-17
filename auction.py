@@ -24,7 +24,7 @@ import re
 import requests
 import time
 import urllib.parse
-
+import itertools
 
 
 SLEEP_TIME = 10
@@ -478,18 +478,18 @@ def serialize_cookies(cookies):
 
 FILE_REGEX=r".+/[a-z]+_[0-9a-f]{6}\.jpg$"
 
-def get_original_files(pattern="data/*/*.jpg"):
+def get_original_files(pattern="data/items/*/*.jpg"):
     """元画像のみを取得し、更新日時が早い順にソート"""
     files = glob.glob(pattern)
     original_files = [file for file in files if re.match(FILE_REGEX, file)]
     # 更新日時でソート
     return sorted(original_files, key=os.path.getmtime, reverse=True)
 
-def get_original_files_with_tags(tags, base_pattern="data/{}/*.jpg", suffix="sample"):
+def get_original_files_with_tags(tags, base_pattern="data/items/{}/*.jpg", suffix="sample"):
     """
     元画像のみを取得し、更新日時が早い順にソート
     :param tags: マッチさせたいタグのリスト (例: ["a", "b"])
-    :param base_pattern: ベースとなるパターン (デフォルトは "data/{}/**/*.jpg")
+    :param base_pattern: ベースとなるパターン (デフォルトは "data/items/{}/**/*.jpg")
     """
     if suffix != "":
         suffix = f"_{suffix}"
@@ -520,6 +520,40 @@ def get_hash(file_path):
     if match:
         extracted = match.group()
         return extracted
+
+def get_purchased():
+    # JSONファイルが保存されているディレクトリ
+    directory = "./print_qr/"
+    
+    # ユニークなファイルリストを保持するセット
+    unique_files = set()
+    
+    # ディレクトリ内のすべてのJSONファイルを処理
+    for file_name in os.listdir(directory):
+        if file_name.endswith(".json"):  # JSONファイルのみを対象
+            file_path = os.path.join(directory, file_name)
+            try:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
+                    if "files" in data:
+                        unique_files.update(data["files"])  # filesをセットに追加
+            except (json.JSONDecodeError, KeyError):
+                pass
+                # print(f"JSONエラーまたはキーエラー: {file_path}")
+    
+    unique_files = [get_hash(i) for i in unique_files if get_hash(i)]
+    # ユニークなファイルリストをソートして出力
+    unique_files = sorted(unique_files)
+    return set(unique_files)
+
+def get_listed(processed_file="processed_hashes.txt"):
+    hash_file_path = Path(processed_file)
+    return set(hash_file_path.read_text(encoding="utf-8").splitlines()) if hash_file_path.exists() else set()    
+
+def get_file_exclude(file_paths, processed_hashes=None):
+    if processed_hashes is None:
+        processed_hashes = (get_purchased() | get_listed())
+    return [file_path for file_path in file_paths if get_hash(file_path) not in processed_hashes]
 
 
 def convert_to_div_based_html(description):
@@ -966,7 +1000,7 @@ class YahooAuctionTrade():
         link = soup.find('a', class_='libBtnBlueL')
         if link is None:
             matome_accept_url = None
-        elif "leavefeedback" in link:
+        elif "leavefeedback" in link['href']:
             matome_accept_url = None
         else:
             matome_accept_url = "https://contact.auctions.yahoo.co.jp"+link['href']
@@ -1047,7 +1081,9 @@ class YahooAuctionTrade():
         dom = etree.HTML(str(soup))
         elements = dom.xpath('//*[@class="decItmName"]//a')
         ids = [productname_to_imgid(element.text) for element in elements]
-        return ids
+        paths = [urlparse(element.get("href")).path.split('/')[-1] for element in elements if element.get("href")]
+
+        return ids, paths
 
 
     def get_ship_preview(self, url):
@@ -1424,12 +1460,12 @@ class YahooAuctionTrade():
         return response
 
 
-    def shipping_print_code(self, crumb_list, navi_list, img_paths):
+    def shipping_print_code(self, crumb_list, navi_list, img_paths, gift_list=[]):
         # 何番目の取引に発送するか
         main_idx=0
         crumb = crumb_list[main_idx]
         url = navi_list[main_idx]
-        message = generate_message(img_paths, navi_list)
+        message = generate_message(img_paths, navi_list, gift_list)
         response = self.send_message(url, message, crumb)
         assert response.status_code == 200, f"{response.status_code, response.text}"
         return response
@@ -1447,12 +1483,130 @@ class YahooAuctionTrade():
         else:
             return False
 
+
+    def ship(self):
+        # 売却済み一覧
+        trades = self.get_closed_df()
+
+        df = trades.copy()
+        # 不要な列を削除し、状態を更新
+        df = df.drop(columns=['取引', '操作', "選択"])
+        df = df.dropna(subset=['navi'])
+        df['status'], df['is_matome'], df["values"], df["matome_accept_url"] = zip(*df['navi'].apply(lambda url: self.get_status(url)))
+        df['status_value'] = df['status'].apply(lambda x: x.value if hasattr(x, 'name') else x)
+        df2 = df[df['status'] != TransactionStatus.RECEIPT]
+
+
+        # まとめ取引の画像を集約
+        # df2をコピーしてdf3を作成
+        df3 = df2.copy()
+        
+        # is_matomeがTrueの場合のみ、get_matome_imgidsを呼び出し、結果を適切に処理
+        def process_row(row):
+            if row["is_matome"]:
+                imgids, paths = self.get_matome_imgids(row["navi"])
+                imgids = list(set(row["imgids"] + imgids)) if row["imgids"] else imgids
+            else:
+                imgids = row["imgids"]
+                paths = [row["商品ID"]]
+            return pd.Series({"imgids": imgids, "paths": paths})
+
+        df3[["imgids", "paths"]] = df3.apply(process_row, axis=1)
+        def calculate_total_price_with_error(paths, trades):
+            if not paths:  # pathsが空の場合
+                return 0
+            # pathsから商品IDを抽出
+            product_ids = [path.split('/')[-1] for path in paths]
+            # 商品IDがtradesに存在しない場合、例外を発生
+            missing_ids = set(product_ids) - set(trades["商品ID"])
+            assert not missing_ids, f"商品IDが見つかりません: {missing_ids}"
+            # 合計価格を計算
+            return trades.loc[trades["商品ID"].isin(product_ids), "最高落札価格"].sum()
+        
+        # total_priceカラムを追加
+        df3["total_price"] = df3["paths"].apply(lambda paths: calculate_total_price_with_error(paths, trades))
+        
+        df3["落札数"] = df3["imgids"].apply(len)
+        df3[["商品ID", "落札者", "最新のメッセージ", "imgids", "status", "落札数", "total_price"]]
+
+        
+        df4 = df3.copy()
+        
+        aggregated = df4.groupby('落札者').agg(
+            num_transactions=('商品ID', 'count'),
+            imgid_list=('imgids', lambda x: list(itertools.chain.from_iterable(x))),
+            status_list=('status', list),
+            navi_list=('navi', list),
+            num_images=("落札数", "sum"),
+            total_price=("total_price", "sum"),
+            crumb_list=('values', lambda x: [i["crumb"] for i in x]),
+            ready_crumb_list=('values', lambda x: [i.get("seller/ready/.crumb") for i in x]),
+            submit_crumb_list=('values', lambda x: [i.get("seller/submit/.crumb") for i in x])
+        ).reset_index()
+        
+        # 発送可能かを判定（全てのステータスが SHIPPING であるか）
+        aggregated['is_shippable'] = aggregated['status_list'].apply(
+            lambda statuses: all(status == TransactionStatus.SHIPPING for status in statuses)
+        )
+        aggregated['img_paths'] = aggregated['imgid_list'].apply(
+            lambda imgids: [f"./data/items/{i.split('_')[0]}/{i}_submission.jpg" for i in imgids]
+        )
+        aggregated['valid_paths'] = aggregated['img_paths'].apply(
+            lambda paths: all(os.path.exists(path) for path in paths)
+        )
+        assert aggregated['valid_paths'].all(), "一部の画像パスが存在しません。"
+
+        shippable = aggregated[aggregated["is_shippable"]]
+        
+        for user, status_list, navi_list, is_shippable in aggregated[["落札者", "status_list", "navi_list", "is_shippable"]].values.tolist():
+            if is_shippable:
+                flag = "発送可能✅"
+            else:
+                flag = "発送保留❌"
+        
+            logger.info(f"{flag} : {user} :")
+            for status, url in zip(status_list, navi_list):
+                logger.info(f"  * {status.name} : {url}")
+        
+        logger.info("aggregated\n"+aggregated[["落札者", "num_transactions", "num_images", "is_shippable", "valid_paths", "total_price"]].to_string(index=False))
+        
+        for _, row in shippable.iterrows():
+            logger.info(f"落札者: {row['落札者']} ({row['num_images']})")
+            navi_list = row['navi_list']
+            crumb_list = row['crumb_list']
+            ready_crumb_list = row['ready_crumb_list']
+            submit_crumb_list = row['submit_crumb_list']
+            img_paths = row['img_paths']
+            total_price = row['total_price']
+
+            # 3000円毎にプレゼント画像を追加
+            
+        
+            # プリントコード発行
+            r = self.shipping_print_code(crumb_list, navi_list, img_paths, gift_list=gift_list)
+            logger.info("プリントコードを送信しました")
+            
+            # 発送コード発行
+            for url, ready_crumb, submit_crumb in zip(navi_list, ready_crumb_list, submit_crumb_list):
+                logger.info(f"発送処理中: {url}")
+                r1 = self.request_ready_shippment(url, ready_crumb)
+                time.sleep(10)
+                r2 = self.request_complete_shippment(url, submit_crumb)
+                assert r1.status_code == 200 and r2.status_code == 200, (r1.status_code, r2.status_code)
+                time.sleep(10)
+            logger.info("発送処理完了")
+            logger.info("-" * 40)
+            logger.info("")
+
+
+
 def calculate_chunks_length(total_length, max_size=23):
     return math.ceil(total_length / max_size)
 
 
-def generate_message(img_paths, navi_list):
-    qrcode_image = img2url_multi(img_paths)
+def generate_message(img_paths, navi_list, gift_list=[]):
+    # assert len(gift_list)==0, "プレゼント画像は未実装です"
+    qrcode_image = img2url_multi(img_paths, gift_list=gift_list)
     print_manual_image = "https://i.imghippo.com/files/EJn4438nFk.png"
     
     # まとめメッセージを条件によって定義
@@ -1467,17 +1621,21 @@ def generate_message(img_paths, navi_list):
     else:
         summary_message = ""
 
+    if len(gift_list)>0:
+        gift_message = """
+なお、多くのご購入に感謝し、未出品の画像を特典としてお付けしました。プリントにてぜひご確認いただき、お楽しみいただければ幸いです。"""
+    else:
+        gift_message = ""
+
     # メッセージを組み立て
     message = f"""
-このたびはご購入およびお支払い、誠にありがとうございます。
-商品 {len(img_paths)} 件分のプリントコードを発行しました。
+このたびはご購入およびお支払い、誠にありがとうございます。商品 {len(img_paths)} 件分のプリントコードを発行しましたので、お知らせします。
 {summary_message}
-本連絡をもって発送完了のご案内とさせていただきます。
-プリント後は、お手数ですが受け取り連絡をお願いいたします。
-この度はお取引いただき、誠にありがとうございました！
+本連絡をもちまして、発送完了のご案内とさせていただきます。プリント後は、お手数ですが受け取り連絡をお願いします。
+{gift_message}
+改めまして、この度はお取引いただきありがとうございました！
 
-※商品の特性上、こちらからの評価は控えております。
-評価も不要ですので、どうぞご放念ください。
+※商品の特性上、こちらからの評価は控えさせていただきます。また、当方への評価も不要ですので、どうぞお気遣いなくお願いいたします
 
 {qrcode_image}
 {print_manual_image}
