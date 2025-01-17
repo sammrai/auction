@@ -922,27 +922,27 @@ def process_images(file_list, override=False):
 
         # 画像をロード
 
-        # try:
-        image = MyImage(file_path, padding=3)
-        
-        # フィルタを順に適用して保存
-        image.apply_filter(FanzaMosaicFilter(mosaic_size_ratio=0.003, resample_method=PILImage.BOX)) \
-             .save("submission")
+        try:
+            image = MyImage(file_path, padding=3)
+            
+            # フィルタを順に適用して保存
+            image.apply_filter(FanzaMosaicFilter(mosaic_size_ratio=0.003, resample_method=PILImage.BOX)) \
+                .save("submission")
 
-        # サンプル画像
-        # image.apply_filter(MosaicFilter(ratio=0.004)) \
-        #      .apply_filter(WatermarkFilter(size=10)) \
-        #      .apply_filter(ResizeFilter(500)) \
-        #      .save("sample")
-        image.apply_filter(WhiteFillRotatedRectExpandedFilter(expand_px=80)) \
-             .apply_filter(WatermarkFilter(size=10)) \
-             .apply_filter(ResizeFilter(500)) \
-             .save("sample")
-        
-        del image
-        # except ResolutionError as e:
-            # print(e)
-            # move_related_files(file_path, delete_dir)
+            # サンプル画像
+            # image.apply_filter(MosaicFilter(ratio=0.004)) \
+            #      .apply_filter(WatermarkFilter(size=10)) \
+            #      .apply_filter(ResizeFilter(500)) \
+            #      .save("sample")
+            image.apply_filter(WhiteFillRotatedRectExpandedFilter(expand_px=80)) \
+                .apply_filter(WatermarkFilter(size=10)) \
+                .apply_filter(ResizeFilter(500)) \
+                .save("sample")
+            
+            del image
+        except ResolutionError as e:
+            print(e)
+            move_related_files(file_path, "./deleted")
 
 from PIL import Image as PILImage
 from PIL import ImageFilter, ImageChops
@@ -989,7 +989,9 @@ def move_related_files(file_path, destination_dir):
     指定されたファイルとその派生ファイルを指定フォルダに移動する
     """
     base_path, ext = os.path.splitext(file_path)
-    related_files = glob.glob(f"{base_path}_*{ext}") + [file_path]
+    related_files = glob.glob(f"{base_path}_*") + [file_path]
+    #mkdir
+    os.makedirs(destination_dir, exist_ok=True)
 
     for file in related_files:
         shutil.move(file, os.path.join(destination_dir, os.path.basename(file)))
