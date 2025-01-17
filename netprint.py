@@ -196,8 +196,7 @@ def upload_image_to_imghippo(image, title=""):
         dict: アップロード結果のJSONレスポンス。
     """
     # APIのエンドポイントURL
-    from dotenv import load_dotenv
-    load_dotenv()
+    # load_dotenv()
 
     url = "https://api.imghippo.com/v1/upload"  # 実際のAPIエンドポイントに置き換えてください
     # もし環境変数が指定されていなければエラー
@@ -632,6 +631,9 @@ from io import BytesIO
 from PIL import Image
 import base64
 import uuid
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class S3UploadError(Exception):
     """S3へのアップロード失敗時に発生する例外"""
@@ -649,7 +651,8 @@ def upload_image_to_s3(image, bucket_name="yat.ss", title=""):
     Returns:
         dict: アップロード結果の情報。
     """
-    # S3クライアントを初期化
+    # load_dotenv()
+
     s3_client = boto3.client("s3")
 
     try:

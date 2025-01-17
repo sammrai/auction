@@ -37,6 +37,7 @@ def initialize_logger(enable_stdout=True, log_file="auction.log"):
 
     Args:
         enable_stdout (bool): Trueの場合、標準出力にもログを表示
+        log_file (str): ログファイルのパス
     """
     logger = logging.getLogger("listing_logger")
     logger.setLevel(logging.INFO)
@@ -45,18 +46,24 @@ def initialize_logger(enable_stdout=True, log_file="auction.log"):
     if logger.hasHandlers():
         logger.handlers.clear()
 
+    # フォーマットの設定
+    log_format = "%(asctime)s - %(filename)s - %(levelname)s - %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(log_format, date_format)
+
     # ログファイルへの出力設定
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
+    file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
     # 標準出力への出力設定 (オプション)
     if enable_stdout:
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
+        console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
     return logger
+
 
 logger = initialize_logger(enable_stdout=False)  # 標準出力を無効
 
@@ -391,7 +398,7 @@ def listing(cookies, file_path, title_name, description_rte, category = 20840474
     dom = soup.find('a', string='このオークションの商品ページを見る')
     if dom is not None:
         auction_url = dom['href']
-        logger.info(f"{soup.title.string, auction_url}")
+        logger.info(f"出品成功: {auction_url}")
         # os.remove(file_path)
         result = True
     else:
@@ -1484,7 +1491,7 @@ class YahooAuctionTrade():
             return False
 
 
-    def ship(self):
+    def ship(self, gift_image_candidates=None):
         # 売却済み一覧
         trades = self.get_closed_df()
 
@@ -1555,6 +1562,14 @@ class YahooAuctionTrade():
             lambda paths: all(os.path.exists(path) for path in paths)
         )
         assert aggregated['valid_paths'].all(), "一部の画像パスが存在しません。"
+        aggregated['num_gift_images'] = aggregated['total_price'].apply(
+            lambda total_price: total_price//2500
+        )
+
+        aggregated['gift_images'] = aggregated['num_gift_images'].apply(
+            lambda num_gift_images: gift_image_candidates[:num_gift_images] if gift_image_candidates else []
+        )
+
 
         shippable = aggregated[aggregated["is_shippable"]]
         
@@ -1568,7 +1583,7 @@ class YahooAuctionTrade():
             for status, url in zip(status_list, navi_list):
                 logger.info(f"  * {status.name} : {url}")
         
-        logger.info("aggregated\n"+aggregated[["落札者", "num_transactions", "num_images", "is_shippable", "valid_paths", "total_price"]].to_string(index=False))
+        logger.info("aggregated\n"+aggregated[["落札者", "num_transactions", "num_images", "is_shippable", "valid_paths", "total_price", "num_gift_images"]].to_string(index=False))
         
         for _, row in shippable.iterrows():
             logger.info(f"落札者: {row['落札者']} ({row['num_images']})")
@@ -1578,12 +1593,10 @@ class YahooAuctionTrade():
             submit_crumb_list = row['submit_crumb_list']
             img_paths = row['img_paths']
             total_price = row['total_price']
+            gift_images = row['gift_images']
 
-            # 3000円毎にプレゼント画像を追加
-            
-        
             # プリントコード発行
-            r = self.shipping_print_code(crumb_list, navi_list, img_paths, gift_list=gift_list)
+            r = self.shipping_print_code(crumb_list, navi_list, img_paths, gift_images)
             logger.info("プリントコードを送信しました")
             
             # 発送コード発行
