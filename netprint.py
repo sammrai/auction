@@ -183,7 +183,7 @@ def edit_qrcode(qr_data, user_code, expire_date):
     return new_image
 
 
-def upload_image_to_imghippo(api_key, image, title=""):
+def upload_image_to_imghippo(image, title=""):
     """
     Imghippo API v1を使用して画像をアップロードします。
 
@@ -196,7 +196,14 @@ def upload_image_to_imghippo(api_key, image, title=""):
         dict: アップロード結果のJSONレスポンス。
     """
     # APIのエンドポイントURL
+    from dotenv import load_dotenv
+    load_dotenv()
+
     url = "https://api.imghippo.com/v1/upload"  # 実際のAPIエンドポイントに置き換えてください
+    # もし環境変数が指定されていなければエラー
+    api_key=os.getenv("IMGHIPPO_API_KEY")
+    if api_key is None:
+        raise HippoError("Imghippo API キーが設定されていません。")
 
     try:
         # QRコードデータをBytesIOに保存
@@ -217,11 +224,10 @@ def upload_image_to_imghippo(api_key, image, title=""):
             pass
         else:
             print(f"アップロード失敗: ステータスコード {response.status_code, response.json()}")
-        return response
+        return response.json()["data"]["view_url"]
 
     except Exception as e:
-        print(f"エラー: {e}")
-        return None
+        raise HippoError(f"Imghippo API へのアップロードに失敗しました: {e}") from None
 
 def edit_present_qrcode(qr_data, user_code, expire_date):
     font_path = "./material/NotoSansCJK-Regular.ttc"  # 通常フォントのパス
@@ -342,7 +348,7 @@ def edit_present_qrcode(qr_data, user_code, expire_date):
     
     return gradient
 
-def img2url_present(files, hippo_api_key="f7342f8a581c9e66888914bd1fc2a105"):
+def img2url_present(files):
     assert len(files) < 24
     auth_token = authenticate()
     token = auth_token["authToken"]
@@ -374,40 +380,106 @@ def img2url_present(files, hippo_api_key="f7342f8a581c9e66888914bd1fc2a105"):
         json.dump(json_data, json_file, ensure_ascii=False, indent=4)
     
     # QRコード画像をアップロード
-    r = upload_image_to_imghippo(hippo_api_key, new_image)
+    r = upload_image_to_s3(new_image)
     
-    return r.json()["data"]["view_url"]
+    return r
 
-def split_list(input_list, max_size = 23):
+def split_list(input_list, gifts=[], max_size=23):
     """
-    リストを指定された上限に従って複数のリストに分割する関数。
-    
+    リストを指定された上限に従って複数のリストに分割し、
+    giftsがどの集合に何個入ったかを返す関数。
+
     Args:
         input_list (list): 分割する対象のリスト。
+        gifts (list): 初めに結合されるリスト。
         max_size (int): 各リストの最大サイズ。
-        
-    Returns:
-        list of list: 分割されたリストのリスト。
-    """
-    # 分割されたリストを格納する
-    result = []
-    
-    # 元のリストを走査しながら分割
-    for i in range(0, len(input_list), max_size):
-        result.append(input_list[i:i + max_size])
-    
-    return result
 
-def edit_qrcodes(qr_data_list, user_code_list, expire_date):
-    assert len(qr_data_list) == len(user_code_list), "QRコードとユーザコードのリストは同じ長さである必要があります。"
+    Returns:
+        tuple: 分割されたリストのリストと、giftsの配置状況を示すリスト。
+    """
+    combined_list = input_list + gifts
+    result = []
+    gift_counts = []
+
+    for i in range(0, len(combined_list), max_size):
+        chunk = combined_list[i:i + max_size]
+        result.append(chunk)
+        # giftsがこのチャンクに何個入っているかカウント
+        gift_counts.append(len([item for item in chunk if item in gifts]))
+
+    return result, gift_counts
+
+def create_gradient_rounded_rect(width, height, radius, start_color, end_color, horizontal=True, scale=4):
+    """
+    グラデーション付きの丸角長方形画像を作成します。スーパーサンプリングを使用して滑らかなエッジを実現します。
+
+    Args:
+        width (int): 幅
+        height (int): 高さ
+        radius (int): 角の丸み
+        start_color (tuple): グラデーションの開始色 (R, G, B)
+        end_color (tuple): グラデーションの終了色 (R, G, B)
+        horizontal (bool): 水平方向にグラデーションを適用する場合はTrue、垂直方向の場合はFalse
+        scale (int): スーパースケーリングの倍率（デフォルトは4）
+
+    Returns:
+        Image: 作成された丸角長方形の画像
+    """
+    # スケーリングされたサイズ
+    scaled_width = width * scale
+    scaled_height = height * scale
+    scaled_radius = radius * scale
+
+    # ベースとなる高解像度の画像を作成（透明）
+    base_high_res = Image.new('RGBA', (scaled_width, scaled_height), (255, 255, 255, 0))
+    mask_high_res = Image.new('L', (scaled_width, scaled_height), 0)
+    draw_mask = ImageDraw.Draw(mask_high_res)
     
+    # 丸角長方形のマスクを高解像度で作成
+    draw_mask.rounded_rectangle([(0, 0), (scaled_width, scaled_height)], scaled_radius, fill=255)
+    
+    # グラデーションの作成（高解像度）
+    gradient_high_res = Image.new('RGBA', (scaled_width, scaled_height), color=0)
+    draw_gradient = ImageDraw.Draw(gradient_high_res)
+    
+    if horizontal:
+        for x in range(scaled_width):
+            ratio = x / scaled_width
+            r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
+            g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
+            b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
+            draw_gradient.line([(x, 0), (x, scaled_height)], fill=(r, g, b, 255))
+    else:
+        for y in range(scaled_height):
+            ratio = y / scaled_height
+            r = int(start_color[0] + (end_color[0] - start_color[0]) * ratio)
+            g = int(start_color[1] + (end_color[1] - start_color[1]) * ratio)
+            b = int(start_color[2] + (end_color[2] - start_color[2]) * ratio)
+            draw_gradient.line([(0, y), (scaled_width, y)], fill=(r, g, b, 255))
+    
+    # マスクを適用
+    base_high_res.paste(gradient_high_res, (0, 0), mask_high_res)
+    
+    # 高解像度画像を縮小してアンチエイリアスを適用
+    base = base_high_res.resize((width, height), resample=Image.LANCZOS)
+    
+    return base
+
+
+def edit_qrcodes(qr_data_list, user_code_list, expire_date, gifts=None):
+    assert len(qr_data_list) == len(user_code_list), "QRコードとユーザコードのリストは同じ長さである必要があります。"
+    if gifts is None:
+        gifts = [None]*len(qr_data_list)
+            
     font_path = "./material/NotoSansCJK-Regular.ttc"  # フォントのパス
+    font_path2 = "./material/NotoSansCJK-Bold.ttc"  # フォントのパス
     font_size1 = 14  # user_code 用のフォントサイズ
     font_size2 = 17  # expire_date 用のフォントサイズ
     font_size3 = 30  # 枚数表示用のフォントサイズ
+    font_size_label = 14  # ラベル内テキスト用のフォントサイズ
     padding = 20  # 画像の余白
     text_padding = -35  # QRコードとテキスト間の余白
-    count_padding = - 340
+    count_padding = -340
     vertical_spacing = 10  # 各QRコード間の間隔
     corner_radius = 20  # 丸角の半径
     background_color = (255, 255, 255, 255)  # 背景色（白）
@@ -417,6 +489,7 @@ def edit_qrcodes(qr_data_list, user_code_list, expire_date):
     font1 = ImageFont.truetype(font_path, font_size1)
     font2 = ImageFont.truetype(font_path, font_size2)
     font3 = ImageFont.truetype(font_path, font_size3)
+    font_label = ImageFont.truetype(font_path2, font_size_label)
     
     # 各QRコードとユーザコードのサイズを計測
     dummy_img = Image.new("RGB", (1, 1))
@@ -444,8 +517,14 @@ def edit_qrcodes(qr_data_list, user_code_list, expire_date):
     draw = ImageDraw.Draw(new_image)
     current_y = padding
     
+    # ラベルの設定
+    label_start_color = (100, 125, 245)  # #647DF5
+    label_end_color = (65, 192, 217)     # #41C0D9
+    label_padding_x = 10
+    label_padding_y = 5
+    
     # QRコードとユーザコードを描画
-    for index, (qr, user_code) in enumerate(zip(qr_data_list, user_code_list), start=1):
+    for index, (qr, user_code, gift) in enumerate(zip(qr_data_list, user_code_list, gifts), start=1):
 
         # QRコード描画
         qr_x = (new_width - qr.size[0]) // 2
@@ -462,7 +541,36 @@ def edit_qrcodes(qr_data_list, user_code_list, expire_date):
         count_text = f"{index} / {len(qr_data_list)}"
         count_text_width = draw_dummy.textbbox((0, 0), count_text, font=font3)[2]
         count_text_x = (new_width - count_text_width) // 2
-        draw.text((count_text_x, current_y + count_padding), count_text, font=font3, fill=text_color)
+        count_text_y = current_y + count_padding
+        
+        draw.text((count_text_x, count_text_y), count_text, font=font3, fill=text_color)
+
+        if isinstance(gift, int) and gift!=0:
+            label_text = f"+{gift}枚 特典"
+            
+        # 「特典x3」ラベルの描画
+            label_image = create_gradient_rounded_rect(
+                width=75,  # ラベルの幅
+                height=22,  # ラベルの高さ
+                radius=6,  # 角の丸み
+                start_color=label_start_color,
+                end_color=label_end_color,
+                horizontal=True  # 水平方向のグラデーション
+            )
+            
+            # ラベル内にテキストを描画
+            label_draw = ImageDraw.Draw(label_image)
+            label_text_width = label_draw.textbbox((0, 0), label_text, font=font_label)[2]
+            label_text_height = label_draw.textbbox((0, 0), label_text, font=font_label)[3]
+            label_text_x = (label_image.width - label_text_width) // 2
+            label_text_y = (label_image.height - label_text_height) // 2 - 2  # 微調整
+            label_draw.text((label_text_x, label_text_y), label_text, font=font_label, fill=(255, 255, 255, 255))
+            
+            # ラベルをメイン画像に貼り付け
+            label_x = count_text_x + count_text_width + 15  # 枚数表示の右隣に配置
+            label_y = count_text_y + 12  # 微調整
+            new_image.paste(label_image, (label_x, label_y), label_image)
+        
         current_y += font_size3 + text_padding  # 枚数表示分の高さ調整
 
     
@@ -473,10 +581,13 @@ def edit_qrcodes(qr_data_list, user_code_list, expire_date):
     draw.text((text2_x, text2_y), expire_text, font=font2, fill=text_color)
     
     return new_image
-    
 
-def img2url_multi(file_lists, hippo_api_key="f7342f8a581c9e66888914bd1fc2a105"):
-    filess = split_list(file_lists)
+class HippoError(Exception):
+    """Imghippo API エラーを表す例外"""
+    pass
+
+def img2url_multi(file_lists, gift_list=[]):
+    filess, gift_labels = split_list(file_lists, gift_list)
     qr_datas, usercodes, expire_dates = [], [], []
     for files in filess:
         auth_token = authenticate()
@@ -500,26 +611,75 @@ def img2url_multi(file_lists, hippo_api_key="f7342f8a581c9e66888914bd1fc2a105"):
         usercodes.append(usercode)
         expire_dates.append(expire_date)
     
+        # JSONデータ作成と保存
+        json_data = {
+            "files": files,
+            "response_data": response_data
+        }
+        json_file_name = os.path.join(save_dir, f"{usercode}.json")
+        with open(json_file_name, 'w', encoding='utf-8') as json_file:
+            json.dump(json_data, json_file, ensure_ascii=False, indent=4)
+
     # QRコード編集
-    new_image = edit_qrcodes(qr_datas, usercodes, expire_dates[0])
-    
-    # JSONデータ作成と保存
-    json_data = {
-        "files": files,
-        "response_data": response_data
-    }
-    json_file_name = os.path.join(save_dir, f"{usercode}.json")
-    with open(json_file_name, 'w', encoding='utf-8') as json_file:
-        json.dump(json_data, json_file, ensure_ascii=False, indent=4)
-    
+    new_image = edit_qrcodes(qr_datas, usercodes, expire_dates[0], gifts=gift_labels)
     # QRコード画像をアップロード
-    r = upload_image_to_imghippo(hippo_api_key, new_image)
-    return r.json()["data"]["view_url"]
+    r = upload_image_to_s3(new_image)
+    return r
 
 
-if __name__ == "__main__":
-    # 使用例
-    hippo_api_key = "f7342f8a581c9e66888914bd1fc2a105"
-    files = ["./material/size.jpg"] * 2
-    url = img2url(hippo_api_key, files)
-    url
+import boto3
+from io import BytesIO
+from PIL import Image
+import base64
+import uuid
+
+class S3UploadError(Exception):
+    """S3へのアップロード失敗時に発生する例外"""
+    pass
+
+def upload_image_to_s3(image, bucket_name="yat.ss", title=""):
+    """
+    Amazon S3に画像をアップロードします。
+
+    Args:
+        bucket_name (str): S3バケット名。
+        image (PIL.Image.Image): アップロードする画像オブジェクト。
+        title (str, optional): 画像のタイトル（任意）。
+
+    Returns:
+        dict: アップロード結果の情報。
+    """
+    # S3クライアントを初期化
+    s3_client = boto3.client("s3")
+
+    try:
+        # 一意のキーを生成
+        key = f"{uuid.uuid4()}.png"
+
+        # 画像をBytesIOに保存
+        image_bytes = BytesIO()
+        image.save(image_bytes, format="PNG")
+        image_bytes.seek(0)
+
+        # タイトルをBase64エンコードしてメタデータに保存
+        encoded_title = base64.b64encode(title.encode("utf-8")).decode("ascii") if title else None
+
+        # S3にアップロード
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=key,
+            Body=image_bytes,
+            ContentType="image/png",
+        )
+        return f"https://s3.ap-northeast-1.amazonaws.com/yat.ss/{key}"
+
+    except Exception as e:
+        raise S3UploadError(f"S3へのアップロードに失敗しました: {e}") from None
+
+# if __name__ == "__main__":
+#     # 使用例
+#     files = ["./material/size.jpg"] * 2
+#     url = img2url(hippo_api_key, files)
+#     url
+
+
