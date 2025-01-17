@@ -152,6 +152,7 @@ class ForgeResource:
         return model_id, model_type
 
     def install_plugin(self, url):
+        self.ssh_client.connect()
         repo_name = url.rstrip('/').split('/')[-1].removesuffix('.git')
         path = f"/app/data/extensions/{repo_name}"
         cmd = f"""
@@ -310,7 +311,10 @@ class ForgeAPI:
         raise RuntimeError("Maximum retries reached for forge.get_sdapi_v1_options()")
 
     def restart(self):
-        self.post_sdapi_v1_server_restart()
+        try:
+            self.post_sdapi_v1_server_restart()
+        except HTTPError as e:
+            pass
         self.wait_until_startup()
 
     def reload_models(self):
@@ -426,19 +430,21 @@ class ForgeAPI:
         
         return matched_model
 
-    def _extract_and_validate_loras(self, prompt):
+    @classmethod
+    def extract_loras(cls, prompt):
         lora_pattern = r'<lora:([^:]+):([\d.]+)>'
         lora_matches = re.findall(lora_pattern, prompt)
         loras = {name: float(weight) for name, weight in lora_matches}
-        
+        cleaned_prompt = re.sub(lora_pattern, "", prompt).strip(", ")
+        return cleaned_prompt, loras
+
+    def _extract_and_validate_loras(self, prompt):
+        cleaned_prompt, loras = self.extract_loras(prompt)
         lora_aliases = {lora["alias"] for lora in self.loras}
         missing_loras = [name for name in loras if name not in lora_aliases]
         
         if missing_loras:
             raise ValueError(f"Missing LoRA aliases: {missing_loras}")
-        
-        # LoRA の部分をプロンプトから削除
-        cleaned_prompt = re.sub(lora_pattern, "", prompt).strip(", ")
         
         return cleaned_prompt, loras
 
@@ -454,7 +460,8 @@ class ForgeAPI:
     def _gen(self, _data, options,
             lora_options={},
             dpi=50,
-            output_dir="./generated",
+            output_dir="./data/generated",
+            delete_dir="./data/generated/dev",
             exif={},
             show_image=False,
             hr=False,
@@ -495,17 +502,17 @@ class ForgeAPI:
         elif adetailer == "face":
             data["alwayson_scripts"] = adetailer_face
         else:
-            data["alwayson_scripts"] = None
+            data["alwayson_scripts"] = {}
 
         # APIへのオプション送信
         # optionが違う時に送信する
         current_optons = self.get_sdapi_v1_options()
         if not all(current_optons[k] == options[k] for k in current_optons.keys() & options.keys()):
-            print("###")
             self.post_sdapi_v1_options(json=options)
 
         # プロンプトにLoRAオプションを追加
         data.update(_data)
+        data["enable_hr"] = hr
 
         # LoRAオプションの文字列化
         lora_str = ", " + ", ".join([f"<lora:{k}:{v}>" for k, v in lora_options.items()])
@@ -525,11 +532,7 @@ class ForgeAPI:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
         # 各画像を保存
-        for i, img in enumerate(images):
-            file_path = os.path.join(output_dir,f"{timestamp}_{i}.jpg")
-            base, ext = os.path.splitext(file_path)
-            labeled_file_path = f"{base}_label.png"
-            
+        for i, img in enumerate(images):            
             # 画像データをデコード
             img_data = base64.b64decode(img)
             image = Image.open(io.BytesIO(img_data))
@@ -552,13 +555,23 @@ class ForgeAPI:
             # EXIFバイトデータを生成
             exif_bytes = piexif.dump(exif_dict)
             
+            # クラスと位置のリストを返す
+            predictions = self.nude_detector.detect_specific_classes(image)
+            
+            # もしマスキング有効無効と、推定結果の有無に齟齬がある場合は、ngをつける。そうでないときは何もつけない
+            # 成人向け画像に、健全画像が混ざることを防ぎ、逆に健全画像にはマスキングがかかっていないことを保証する
+            if enable_masking != (len(predictions) >= 1):
+                prefix = "ng_"
+                output_dir = delete_dir
+            else:
+                prefix = ""
+
+            file_path = os.path.join(output_dir,f"{prefix}{timestamp}_{i}.jpg")
+            base, ext = os.path.splitext(file_path)
+            labeled_file_path = f"{base}_label.png"
+
             # 画像をJPEG形式で保存し、EXIFデータを埋め込む
             image.save(file_path, "JPEG", exif=exif_bytes, quality=95)
-
-            if enable_masking:
-                predictions = self.nude_detector.detect(file_path)
-            else:
-                predictions = []
             save_labeled_image(file_path, labeled_file_path, predictions)
 
         # 画像を横に並べて表示
@@ -569,13 +582,7 @@ class ForgeAPI:
     
     import random
 
-import threading
 import time
-from ipywidgets import Button, VBox, Output
-from IPython.display import display
-
-import signal
-
 import signal
 from tqdm import tqdm  # tqdmをインポート
 
