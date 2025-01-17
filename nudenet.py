@@ -6,6 +6,7 @@ import numpy as np
 import onnxruntime
 from onnxruntime.capi import _pybind_state as C
 from enum import Enum
+from PIL import Image
 
 __labels = [
     "FEMALE_GENITALIA_COVERED",
@@ -59,6 +60,9 @@ def _read_image(image_path, target_size=320):
         mat = cv2.imdecode(np.frombuffer(image_path, np.uint8), -1)
     elif isinstance(image_path, _io.BufferedReader):
         mat = cv2.imdecode(np.frombuffer(image_path.read(), np.uint8), -1)
+            # image = Image.open(io.BytesIO(img_data))のとき
+    elif isinstance(image_path, Image.Image):
+        mat = cv2.cvtColor(np.array(image_path), cv2.COLOR_RGBA2BGR)
     else:
         raise ValueError(
             "please make sure the image_path is str or np.ndarray or bytes"
@@ -198,6 +202,21 @@ class NudeDetector:
         )
 
         return detections
+
+    def detect_specific_classes(self, image_path: str, target_classes=[NudeLabels.ANUS_EXPOSED, NudeLabels.MALE_GENITALIA_EXPOSED]):
+        """
+        特定のクラスに絞って検出を行うラッパー関数。
+
+        Args:
+            image_path (str): 検出対象の画像パス。
+            target_classes (List[int]): 検出したいクラスのリスト。
+
+        Returns:
+            List[dict]: 指定されたクラスに一致する検出結果のリスト。
+        """
+        detections = self.detect(image_path)
+        filtered_detections = [d for d in detections if d["class"] in target_classes]
+        return filtered_detections
 
     def detect_batch(self, image_paths, batch_size=4):
         """
@@ -401,8 +420,8 @@ class ImageInferencer:
         plt.axis("off")
         plt.show()
 
-
-def save_labeled_image(file_path, labeled_file_path, predictions, target_classes=[NudeLabels.ANUS_EXPOSED, NudeLabels.MALE_GENITALIA_EXPOSED], show_image=False):
+    
+def save_labeled_image(file_path, labeled_file_path, predictions, show_image=False):
     """
     推論結果を描画し、塗りつぶして保存する関数。
 
@@ -410,7 +429,6 @@ def save_labeled_image(file_path, labeled_file_path, predictions, target_classes
         file_path (str): 元画像のファイルパス。
         labeled_file_path (str): 保存先のファイルパス（PNG形式）。
         predictions (list): 推論結果のリスト。
-        target_classes (list): 塗りつぶし対象のクラスのリスト。
         show_image (bool): 画像を表示するかどうか（デフォルトはFalse）。
 
     Returns:
@@ -432,9 +450,6 @@ def save_labeled_image(file_path, labeled_file_path, predictions, target_classes
     for pred in predictions:
         cls_label = pred.get("class", "Unknown")
         box = pred.get("box", [0, 0, 0, 0])
-
-        if cls_label not in target_classes:
-            continue
 
         x1, y1, width, height = box
         x2, y2 = x1 + width, y1 + height

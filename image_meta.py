@@ -156,3 +156,20 @@ def fetch_civitai_model_by_name(query: str) -> dict:
     # Return the first match
     return matched_models[0]
 
+
+
+def visualize_lora(data, max_bar_length=10, max_label_length=30):
+    """
+    辞書の値を基に、テキストベースの滑らかな黒いバーグラフを表示します。
+
+    Args:
+        data (dict): キーがラベル、値が数値（0〜1）の辞書。
+        max_bar_length (int): バーの最大長。
+        max_label_length (int): ラベルの最大表示長。
+    """
+    for key, value in data.items():
+        truncated_key = (key[:max_label_length] + "...") if len(key) > max_label_length else key
+        bar_length = int(value * max_bar_length)  # 値をバーの長さにスケール
+        bar = "█" * bar_length  # 滑らかな黒いバーを生成
+        print(f"{truncated_key:<{max_label_length + 3}} | {bar:<{max_bar_length}} {value:.2f}")
+
