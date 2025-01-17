@@ -19,8 +19,9 @@ class ResolutionError(Exception):
 
 class MyImage:
     def __init__(self, image_path, label_colors={
-        "1": (0, 255, 0, 255),    # 価格ラベル: 緑
-        "4": (255, 0, 255, 255)   # タイトルラベル: マゼンタ
+        "1": (0, 255, 0, 255),    # 男性器
+        "4": (255, 0, 255, 255),   # アナル
+        "5": (0, 0, 255, 255),   # 女性器
     }, tolerance=2, aspect_ratio_tolerance=1e-1, padding=0, skip_resolution_check=False):
         self.image_path = image_path
         self.original_image = PILImage.open(image_path).convert("RGBA")

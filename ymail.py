@@ -115,7 +115,8 @@ class IMAPNewMailCheckerByUID:
         password: str,
         server: str = "imap.mail.yahoo.co.jp",
         port: int = 993,
-        poll_interval: int = 60
+        poll_interval: int = 60,
+        mailbox: str = "INBOX",
     ):
         self.email_address = email_address
         self.password = password
@@ -125,13 +126,14 @@ class IMAPNewMailCheckerByUID:
         self.mail = None
         self.last_uid = 0
         self.callbacks = []
+        self.mailbox = mailbox
 
     def connect(self):
         """IMAP サーバーに接続して認証を行う。"""
         try:
             self.mail = imaplib.IMAP4_SSL(self.server, self.port)
             self.mail.login(self.email_address, self.password)
-            self.mail.select("INBOX")
+            self.mail.select(self.mailbox)
         except Exception as e:
             print(f"Connection failed: {e}")
             self.mail = None

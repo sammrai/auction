@@ -31,7 +31,7 @@ SLEEP_TIME = 10
 
 
 
-def initialize_logger(enable_stdout=True, log_file="yahoo_auction.log"):
+def initialize_logger(enable_stdout=True, log_file="auction.log"):
     """
     ロガーを初期化する関数
 

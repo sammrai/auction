@@ -31,25 +31,63 @@ __labels = [
 
 
 class NudeLabels(Enum):
-    FEMALE_GENITALIA_COVERED = "FEMALE_GENITALIA_COVERED"
-    FACE_FEMALE = "FACE_FEMALE"
-    BUTTOCKS_EXPOSED = "BUTTOCKS_EXPOSED"
-    FEMALE_BREAST_EXPOSED = "FEMALE_BREAST_EXPOSED"
-    FEMALE_GENITALIA_EXPOSED = "FEMALE_GENITALIA_EXPOSED"
-    MALE_BREAST_EXPOSED = "MALE_BREAST_EXPOSED"
-    ANUS_EXPOSED = "ANUS_EXPOSED"
-    FEET_EXPOSED = "FEET_EXPOSED"
-    BELLY_COVERED = "BELLY_COVERED"
-    FEET_COVERED = "FEET_COVERED"
-    ARMPITS_COVERED = "ARMPITS_COVERED"
-    ARMPITS_EXPOSED = "ARMPITS_EXPOSED"
-    FACE_MALE = "FACE_MALE"
-    BELLY_EXPOSED = "BELLY_EXPOSED"
-    MALE_GENITALIA_EXPOSED = "MALE_GENITALIA_EXPOSED"
-    ANUS_COVERED = "ANUS_COVERED"
-    FEMALE_BREAST_COVERED = "FEMALE_BREAST_COVERED"
-    BUTTOCKS_COVERED = "BUTTOCKS_COVERED"
+    FEMALE_GENITALIA_COVERED = "FEMALE_GENITALIA_COVERED" #1
+    FACE_FEMALE = "FACE_FEMALE" #2
+    BUTTOCKS_EXPOSED = "BUTTOCKS_EXPOSED" #3
+    FEMALE_BREAST_EXPOSED = "FEMALE_BREAST_EXPOSED" #4
+    FEMALE_GENITALIA_EXPOSED = "FEMALE_GENITALIA_EXPOSED" #5
+    MALE_BREAST_EXPOSED = "MALE_BREAST_EXPOSED" #6
+    ANUS_EXPOSED = "ANUS_EXPOSED" #7
+    FEET_EXPOSED = "FEET_EXPOSED" #8
+    BELLY_COVERED = "BELLY_COVERED" #9
+    FEET_COVERED = "FEET_COVERED" #10
+    ARMPITS_COVERED = "ARMPITS_COVERED" #11
+    ARMPITS_EXPOSED = "ARMPITS_EXPOSED" #12
+    FACE_MALE = "FACE_MALE" #13
+    BELLY_EXPOSED = "BELLY_EXPOSED" #14
+    MALE_GENITALIA_EXPOSED = "MALE_GENITALIA_EXPOSED" #15
+    ANUS_COVERED = "ANUS_COVERED" #16
+    FEMALE_BREAST_COVERED = "FEMALE_BREAST_COVERED" #17
+    BUTTOCKS_COVERED = "BUTTOCKS_COVERED" #18
 
+
+
+LABEL_COLORS = {
+    # 性器男性
+    NudeLabels.ANUS_EXPOSED: (255,0,255),
+    NudeLabels.MALE_GENITALIA_EXPOSED: (0, 255, 0),
+
+    # 性器女性
+    NudeLabels.FEMALE_GENITALIA_EXPOSED: (0, 0, 255), # 青（露出）
+
+    # カバー
+    NudeLabels.FEMALE_GENITALIA_COVERED: (200, 162, 200),  # 薄い紫（カバー部分）
+    NudeLabels.ANUS_COVERED: (255, 222, 173),            # ベージュ（カバー部分）
+
+    # 胸部関連
+    NudeLabels.FEMALE_BREAST_EXPOSED: (255, 20, 147),    # ピンク（女性胸部露出）
+    NudeLabels.FEMALE_BREAST_COVERED: (240, 230, 140),  # カーキ（女性胸部カバー）
+    NudeLabels.MALE_BREAST_EXPOSED: (30, 144, 255),     # 青（男性胸部露出）
+
+    # お尻関連
+    NudeLabels.BUTTOCKS_COVERED: (222, 184, 135),       # ベージュ
+    NudeLabels.BUTTOCKS_EXPOSED: (139, 69, 19),        # 茶色（露出）
+
+    # 顔
+    NudeLabels.FACE_FEMALE: (255, 182, 193),           # ピンク（女性顔）
+    NudeLabels.FACE_MALE: (70, 130, 180),             # 青（男性顔）
+
+    # 足や体の部位
+    NudeLabels.FEET_EXPOSED: (244, 164, 96),          # サンドブラウン（露出）
+    NudeLabels.FEET_COVERED: (144, 238, 144),         # ライトグリーン（カバー）
+
+    NudeLabels.BELLY_COVERED: (173, 216, 230),        # ライトブルー（お腹カバー）
+    NudeLabels.BELLY_EXPOSED: (255, 160, 122),        # サーモン（お腹露出）
+
+    # 脇
+    NudeLabels.ARMPITS_COVERED: (176, 224, 230),      # パウダーブルー（カバー）
+    NudeLabels.ARMPITS_EXPOSED: (135, 206, 235),      # スカイブルー（露出）
+}
 
 def _read_image(image_path, target_size=320):
     if isinstance(image_path, str):
@@ -170,8 +208,8 @@ def _postprocess(
 
 
 class NudeDetector:
-    def __init__(self, model_path="models/640m.onnx", providers=None, inference_resolution=640):
-        self.onnx_session = onnxruntime.InferenceSession(model_path)
+    def __init__(self, model="models/640m.onnx", providers=None, inference_resolution=640):
+        self.onnx_session = onnxruntime.InferenceSession(model)
         model_inputs = self.onnx_session.get_inputs()
 
         self.input_width = inference_resolution
@@ -313,43 +351,6 @@ class NudeDetector:
         return output_path
 
 
-
-LABEL_COLORS = {
-    # マゼンタ
-    NudeLabels.ANUS_EXPOSED: (255,0,255),
-    NudeLabels.MALE_GENITALIA_EXPOSED: (0, 255, 0),      # 鮮やかな赤
-
-    # 性器関連
-    NudeLabels.FEMALE_GENITALIA_COVERED: (200, 162, 200),  # 薄い紫（カバー部分）
-    NudeLabels.FEMALE_GENITALIA_EXPOSED: (255, 0, 255),   # 鮮やかな紫（露出部分）
-
-    # 肛門関連
-    NudeLabels.ANUS_COVERED: (255, 222, 173),            # ベージュ（カバー部分）
-
-    # 胸部関連
-    NudeLabels.FEMALE_BREAST_EXPOSED: (255, 20, 147),    # ピンク（女性胸部露出）
-    NudeLabels.FEMALE_BREAST_COVERED: (240, 230, 140),  # カーキ（女性胸部カバー）
-    NudeLabels.MALE_BREAST_EXPOSED: (30, 144, 255),     # 青（男性胸部露出）
-
-    # お尻関連
-    NudeLabels.BUTTOCKS_COVERED: (222, 184, 135),       # ベージュ
-    NudeLabels.BUTTOCKS_EXPOSED: (139, 69, 19),        # 茶色（露出）
-
-    # 顔
-    NudeLabels.FACE_FEMALE: (255, 182, 193),           # ピンク（女性顔）
-    NudeLabels.FACE_MALE: (70, 130, 180),             # 青（男性顔）
-
-    # 足や体の部位
-    NudeLabels.FEET_EXPOSED: (244, 164, 96),          # サンドブラウン（露出）
-    NudeLabels.FEET_COVERED: (144, 238, 144),         # ライトグリーン（カバー）
-
-    NudeLabels.BELLY_COVERED: (173, 216, 230),        # ライトブルー（お腹カバー）
-    NudeLabels.BELLY_EXPOSED: (255, 160, 122),        # サーモン（お腹露出）
-
-    # 脇
-    NudeLabels.ARMPITS_COVERED: (176, 224, 230),      # パウダーブルー（カバー）
-    NudeLabels.ARMPITS_EXPOSED: (135, 206, 235),      # スカイブルー（露出）
-}
 
 
 import requests
