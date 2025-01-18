@@ -703,6 +703,8 @@ def display_images_in_single_row(files):
     plt.tight_layout()
     plt.show()
 
+from urllib.parse import urlparse
+
 
 class YahooAuctionTrade:
     def __init__(self, account, config_file="auction_config.yml"):
@@ -727,9 +729,16 @@ class YahooAuctionTrade:
         """
         リクエスト後に実行されるコールバック処理。
         """
-        logger.info(f"request: {response.status_code} {response.request.method} {response.url.replace('https://auctions.yahoo.co.jp', '')}")
+        logger.info(f"request: {response.status_code} {response.request.method} {urlparse(response.url).netloc}{urlparse(response.url).path}")
+
+        response.raise_for_status()
+
+        # ステータスコードごとの処理
+        if response.status_code < 300:
+            time.sleep(20)
+        else:
+            pass
         self.cookie_update()
-        time.sleep(10)
 
     def is_cookie_updated(self):
         return self._temp_cookies != self.session.cookies
@@ -739,6 +748,8 @@ class YahooAuctionTrade:
             logger.info("update cookie")
             self.__config["accounts"][self.__account]["cookies"] = serialize_cookies(self.session.cookies)
             save_config("config.yml", self.__config, self.__yaml)
+            self._temp_cookies = self.session.cookies.copy()
+            logger.info(f"is_cookie_updated: {self.is_cookie_updated()}")
 
 
     def post_img(self, file_path, headers, img_crumb, ):
