@@ -1757,7 +1757,7 @@ def calculate_chunks_length(total_length, max_size=23):
 def generate_message(img_paths, navi_list, gift_list=[]):
     # assert len(gift_list)==0, "プレゼント画像は未実装です"
     qrcode_image = img2url_multi(img_paths, gift_list=gift_list)
-    print_manual_image = "https://i.imghippo.com/files/EJn4438nFk.png"
+    print_manual_image = "https://s3.ap-northeast-1.amazonaws.com/yat.ss/usage2.png"
     
     # まとめメッセージを条件によって定義
     if len(navi_list) >= 2:
