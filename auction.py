@@ -701,6 +701,47 @@ productname_to_imgid = lambda x: re.search(r'[a-zA-Z]_[a-zA-Z0-9]{6}', x).group(
 
 
 
+def cache_to_csv(cache_dir="./cache"):
+    """
+    キャッシュデコレータ。関数の2番目の引数（年月）が現在の月の場合はキャッシュを使用しない。
+
+    Args:
+        cache_dir (str): キャッシュを保存するディレクトリのパス。
+    """
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if len(args) < 2:
+                raise ValueError("2番目の引数（年月）が必要です。")
+            key = args[1]  # 年月
+            current_year_month = datetime.now().strftime("%Y%m")  # 現在の年月
+            cache_file = os.path.join(cache_dir, f"{key}.csv")
+            
+            # 現在の月の場合はキャッシュを使用せずに実行
+            if key == current_year_month:
+                print(f"現在の月 ({current_year_month}) のためキャッシュを使用しません。")
+                result = func(*args, **kwargs)
+            # 過去の月の場合
+            elif os.path.exists(cache_file):
+                print(f"キャッシュからデータを読み込みます: {cache_file}")
+                df = pd.read_csv(cache_file, index_col=0)  # index_col=0でインデックスを復元
+                df["取扱日"] = pd.to_datetime(df["取扱日"])
+                return df
+                
+            else:
+                result = func(*args, **kwargs)
+                if not isinstance(result, pd.DataFrame):
+                    raise ValueError("戻り値は pandas.DataFrame である必要があります。")
+                result.to_csv(cache_file, index=True)  # index=Trueでインデックスを保存
+                print(f"データをキャッシュに保存しました: {cache_file}")
+            return result
+
+        return wrapper
+    return decorator
+
 
 def hash_url(url: str) -> str:
     return hashlib.md5(url.encode('utf-8')).hexdigest()
@@ -836,8 +877,15 @@ def display_images_in_single_row(files):
 
 
 class YahooAuctionTrade():
-    def __init__(self, initial_cookies):
+    def __init__(self, account, config_file="config.yml"):
         # セッションを作成
+        self.__config, self.__yaml = load_config(config_file)
+        self.__account = account
+        self.account_config = self.__config["accounts"][account]
+        initial_cookies = parse_cookie_string(self.account_config["cookies"])
+        self.tags = self.account_config["tags"]
+        assert all([tag in self.__config for tag in self.tags]), "タグが一致しません"
+
         self.session = requests.Session()
         self.session.cookies.update(initial_cookies)
         self.session.max_redirects = 2
@@ -847,6 +895,12 @@ class YahooAuctionTrade():
     def is_cookie_updated(self):
         return self._temp_cookies != self.session.cookies
 
+    def cookie_update(self):
+        if self.is_cookie_updated():
+            logger.info("update cookie")
+            self.__config["accounts"][self.__account]["cookies"] = serialize_cookies(self.session.cookies)
+            save_config("config.yml", self.__config, self.__yaml)
+            
     def get_table(self, url, index_col=0, table_class='ItemTable', referer='https://auctions.yahoo.co.jp/user/jp/show/mystatus', apg=None):
         """
         Yahoo!オークションのページからテーブルデータを取得し、次ページのapgを返す。
@@ -950,10 +1004,10 @@ class YahooAuctionTrade():
         while current_apg is not None:
             # 最大ページ数に達したら終了
             if max_pages is not None and fetched_pages >= max_pages:
-                logger.info(f"Reached the maximum number of pages: {max_pages}")
+                # logger.info(f"Reached the maximum number of pages: {max_pages}")
                 break
     
-            logger.info(f"Fetching page {url} {current_apg}...")
+            # logger.info(f"Fetching page {url} {current_apg}...")
             df, next_apg = self.get_table(url, index_col=index_col, apg=current_apg)
             
             if df is not None:
@@ -1478,6 +1532,7 @@ class YahooAuctionTrade():
         return response
 
     def accept_omatome(self, url):
+        logger.info(f"まとめ承認します {url}")
         status, is_matome, values, matome_accept_url = self.get_status(url)
         if matome_accept_url:
             values1 = self.get_ship_preview(matome_accept_url)
@@ -1486,13 +1541,16 @@ class YahooAuctionTrade():
             time.sleep(10)
             ret_submit = self.post_ship_submit(url, values2['seller/bundle/shipsubmit/_crumb'])    
             time.sleep(10)
+            logger.info(f"まとめ承認しました")
             return True
         else:
+            logger.error(f"すでに承認済みです")
             return False
 
 
     def ship(self, gift_image_candidates=None):
         # 売却済み一覧
+        logger.info(f"発送処理開始")
         trades = self.get_closed_df()
 
         df = trades.copy()
@@ -1611,6 +1669,85 @@ class YahooAuctionTrade():
             logger.info("-" * 40)
             logger.info("")
 
+    @cache_to_csv()
+    def get_sales(self, datestr,):
+        # ベースヘッダー
+        base_headers = {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+            "cache-control": "no-cache",
+            "pragma": "no-cache",
+            "priority": "u=0, i",
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-arch": '"arm"',
+            "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-model": '""',
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-ch-ua-platform-version": '"15.1.1"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "same-site",
+            "sec-fetch-user": "?1",
+            "upgrade-insecure-requests": "1",
+        }
+        
+        # GETリクエスト用ヘッダー
+        get_headers = base_headers.copy()
+        get_headers.update({
+            "Referer": "https://auctions.yahoo.co.jp/",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+        })
+        
+        # GETリクエストを送信
+        response = self.session.get("https://salesmanagement.yahoo.co.jp/list", headers=get_headers)
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        input_values = extract_input_values(soup)
+        crumb = input_values[".crumb"]
+        
+        post_headers = base_headers.copy()
+        post_headers.update({
+            "content-type": "application/x-www-form-urlencoded",
+            "Referer": "https://salesmanagement.yahoo.co.jp/list",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "sec-fetch-site": "same-origin",
+        })
+        
+        data = {
+            "i": datestr,
+            ".crumb": crumb,
+        }
+        
+        # POSTリクエスト送信
+        response = self.session.post("https://salesmanagement.yahoo.co.jp/salesmanagelist_csv", headers=post_headers, data=data)
+        assert response.status_code == 200, f"{response.status_code, response.text}"
+        
+        # ダウンロードしたバイナリデータ（例として代入）
+        binary_data = response.content
+        
+        # Shift-JISでデコード
+        decoded_data = binary_data.decode("shift_jis")
+        
+        # 各行を split して 10 列目までに制限
+        truncated_rows = [row.split(',')[:10] for row in decoded_data.splitlines()]
+        
+        # 再び CSV 文字列として連結
+        corrected_csv_data = "\n".join([",".join(cols) for cols in truncated_rows])
+        
+        # pandasで読み込み
+        df = pd.read_csv(StringIO(corrected_csv_data))
+        df
+        df.set_index("商品ID", inplace=True)
+        df["取扱日"] = pd.to_datetime(df["取扱日"], format="%Y年%m月%d日 %H時%M分", errors="coerce")
+        num_cols = ["売上", "決済金額", "落札システム利用料", "販売手数料", "送料", "受取金額"]
+        for col in num_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.sort_values("取扱日")
+        df["利益"] = df["売上"] - df["落札システム利用料"]
+        df
+        return df
 
 
 def calculate_chunks_length(total_length, max_size=23):
@@ -1684,125 +1821,3 @@ def display_resized_images_horizontally(files, max_images_per_row=5):
     plt.tight_layout()
     plt.show()
 
-
-def cache_to_csv(cache_dir="./cache"):
-    """
-    キャッシュデコレータ。関数の2番目の引数（年月）が現在の月の場合はキャッシュを使用しない。
-
-    Args:
-        cache_dir (str): キャッシュを保存するディレクトリのパス。
-    """
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            if len(args) < 2:
-                raise ValueError("2番目の引数（年月）が必要です。")
-            key = args[1]  # 年月
-            current_year_month = datetime.now().strftime("%Y%m")  # 現在の年月
-            cache_file = os.path.join(cache_dir, f"{key}.csv")
-            
-            # 現在の月の場合はキャッシュを使用せずに実行
-            if key == current_year_month:
-                print(f"現在の月 ({current_year_month}) のためキャッシュを使用しません。")
-                result = func(*args, **kwargs)
-            # 過去の月の場合
-            elif os.path.exists(cache_file):
-                print(f"キャッシュからデータを読み込みます: {cache_file}")
-                df = pd.read_csv(cache_file, index_col=0)  # index_col=0でインデックスを復元
-                df["取扱日"] = pd.to_datetime(df["取扱日"])
-                return df
-                
-            else:
-                result = func(*args, **kwargs)
-                if not isinstance(result, pd.DataFrame):
-                    raise ValueError("戻り値は pandas.DataFrame である必要があります。")
-                result.to_csv(cache_file, index=True)  # index=Trueでインデックスを保存
-                print(f"データをキャッシュに保存しました: {cache_file}")
-            return result
-
-        return wrapper
-    return decorator
-
-@cache_to_csv()
-def get_sales(cookies, datestr,):
-    # ベースヘッダー
-    base_headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "cache-control": "no-cache",
-        "pragma": "no-cache",
-        "priority": "u=0, i",
-        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        "sec-ch-ua-arch": '"arm"',
-        "sec-ch-ua-full-version-list": '"Google Chrome";v="131.0.6778.205", "Chromium";v="131.0.6778.205", "Not_A Brand";v="24.0.0.0"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-model": '""',
-        "sec-ch-ua-platform": '"macOS"',
-        "sec-ch-ua-platform-version": '"15.1.1"',
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-site",
-        "sec-fetch-user": "?1",
-        "upgrade-insecure-requests": "1",
-    }
-    
-    # GETリクエスト用ヘッダー
-    get_headers = base_headers.copy()
-    get_headers.update({
-        "Referer": "https://auctions.yahoo.co.jp/",
-        "Referrer-Policy": "strict-origin-when-cross-origin",
-    })
-    
-    # GETリクエストを送信
-    response = requests.get("https://salesmanagement.yahoo.co.jp/list", headers=get_headers, cookies=cookies)
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    
-    soup = BeautifulSoup(response.text, "html.parser")
-    input_values = extract_input_values(soup)
-    crumb = input_values[".crumb"]
-    
-    post_headers = base_headers.copy()
-    post_headers.update({
-        "content-type": "application/x-www-form-urlencoded",
-        "Referer": "https://salesmanagement.yahoo.co.jp/list",
-        "Referrer-Policy": "strict-origin-when-cross-origin",
-        "sec-fetch-site": "same-origin",
-    })
-    
-    data = {
-        "i": datestr,
-        ".crumb": crumb,
-    }
-    
-    # POSTリクエスト送信
-    response = requests.post("https://salesmanagement.yahoo.co.jp/salesmanagelist_csv", headers=post_headers, data=data, cookies=cookies)
-    assert response.status_code == 200, f"{response.status_code, response.text}"
-    
-    
-    # ダウンロードしたバイナリデータ（例として代入）
-    binary_data = response.content
-    
-    # Shift-JISでデコード
-    decoded_data = binary_data.decode("shift_jis")
-    
-    # 各行を split して 10 列目までに制限
-    truncated_rows = [row.split(',')[:10] for row in decoded_data.splitlines()]
-    
-    # 再び CSV 文字列として連結
-    corrected_csv_data = "\n".join([",".join(cols) for cols in truncated_rows])
-    
-    # pandasで読み込み
-    df = pd.read_csv(StringIO(corrected_csv_data))
-    df
-    df.set_index("商品ID", inplace=True)
-    df["取扱日"] = pd.to_datetime(df["取扱日"], format="%Y年%m月%d日 %H時%M分", errors="coerce")
-    num_cols = ["売上", "決済金額", "落札システム利用料", "販売手数料", "送料", "受取金額"]
-    for col in num_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.sort_values("取扱日")
-    df["利益"] = df["売上"] - df["落札システム利用料"]
-    df
-    return df
