@@ -115,8 +115,8 @@ def get_meta(file_path):
         # メタデータから image URL を取得
         image_url = metadata.get("26", {}).get("inputs", {}).get("image")
         if not image_url:
-            print(f"No valid image URL in metadata: {file_path}")
-            return
+            # print(f"No valid image URL in metadata: {file_path}")
+            return None, metadata
 
         downloaded_path = download_image(image_url, output_dir)
         # print(f"Downloaded: {downloaded_path}")

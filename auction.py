@@ -96,8 +96,6 @@ class SafeSession(requests.Session):
 
     def request(self, method, url, *args, **kwargs):
         method_upper = method.upper()
-        logger.info(f"{method_upper} request: {url}. wait 10")
-        time.sleep(10)
 
         if method_upper in self.methods_to_cache and self._is_target(url):
             params = kwargs.get('params')
@@ -111,20 +109,16 @@ class SafeSession(requests.Session):
             if os.path.exists(cache_file):
                 raise Exception(f"Duplicate {method_upper} request detected: {url} with params {params} and data {data or json_data}")
 
-            logger.info(f"通常のリクエストを行います1...")
-            time.sleep(20)
             # リクエストを実行
             response = super().request(method, url, *args, **kwargs)
 
             # ハッシュをキャッシュに保存
             with open(cache_file, 'w') as f:
                 f.write('processed')
-            logger.info(f"Cached {method_upper} request: {url} with params {params} and data {data or json_data}")
+            logger.info(f"Cached {method_upper} request: {url.replace('https://','')}")
 
             return response
         else:
-            logger.info(f"通常のリクエストを行います2...")
-            time.sleep(20)
             return super().request(method, url, *args, **kwargs)
 
 
@@ -1788,6 +1782,7 @@ class YahooAuctionTrade:
                 r2 = self.request_complete_shippment(url, submit_crumb)
                 assert r1.status_code == 200 and r2.status_code == 200, (r1.status_code, r2.status_code)
                 time.sleep(10)
+        logger.info(f"発送処理完了")
 
     @cache_to_csv()
     def get_sales(self, datestr,):
