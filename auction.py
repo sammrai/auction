@@ -10,7 +10,7 @@ from PIL import Image
 from PIL import Image
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 from ruamel.yaml import YAML
-from urllib.parse import urlparse, urlunparse, parse_qs, ParseResult
+from urllib.parse import urlparse, urlunparse, urlencode, parse_qs, ParseResult
 import functools
 import glob
 import hashlib
@@ -28,6 +28,104 @@ import itertools
 import random
 from collections import Counter
 import traceback
+
+
+class SafeSession(requests.Session):
+    def __init__(self, cache_dir="/tmp", *args, **kwargs):
+        """
+        SafeSessionの初期化。
+
+        :param cache_dir: キャッシュディレクトリのパス
+        :param target_domains: キャッシュから除外するドメインのリスト
+        :param methods_to_cache: キャッシュ対象とするHTTPメソッドのリスト
+        """
+        super().__init__(*args, **kwargs)
+        self.cache_dir = cache_dir
+        self.target_domains = ["contact.auctions.yahoo.co.jp"]
+        self.methods_to_cache = ['POST']
+
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+
+    def _is_target(self, url):
+        """
+        URLがホワイトリストに含まれているかを判定する。
+
+        :param url: 判定対象のURL
+        :return: ホワイトリストに含まれていればTrue、そうでなければFalse
+        """
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc
+        return any(domain.endswith(whitelist_domain) for whitelist_domain in self.target_domains)
+
+    def _generate_hash(self, url, params, data, json_data):
+        """
+        URL、params、data、json_dataを元にハッシュを生成する。
+
+        :param url: リクエストURL
+        :param params: クエリパラメータ
+        :param data: フォームデータ
+        :param json_data: JSONデータ
+        :return: SHA-256ハッシュ値
+        """
+        # クエリパラメータをソートしてシリアライズ
+        if params:
+            if isinstance(params, dict):
+                sorted_params = sorted(params.items())
+                params_str = urlencode(sorted_params)
+            else:
+                params_str = urlencode(params)
+        else:
+            params_str = ''
+
+        # POSTデータをシリアライズ
+        if json_data is not None:
+            data_str = json.dumps(json_data, sort_keys=True)
+        elif data is not None:
+            if isinstance(data, dict):
+                sorted_items = sorted(data.items())
+                data_str = '&'.join([f"{k}={v}" for k, v in sorted_items])
+            else:
+                data_str = str(data)
+        else:
+            data_str = ''
+
+        # ハッシュ入力をURL + params + dataで構成
+        hash_input = url + params_str + data_str
+        return hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
+
+    def request(self, method, url, *args, **kwargs):
+        method_upper = method.upper()
+        logger.info(f"{method_upper} request: {url}. wait 10")
+        time.sleep(10)
+
+        if method_upper in self.methods_to_cache and self._is_target(url):
+            params = kwargs.get('params')
+            data = kwargs.get('data')
+            json_data = kwargs.get('json')
+
+            # ハッシュ生成
+            request_hash = self._generate_hash(url, params, data, json_data)
+            cache_file = os.path.join(self.cache_dir, request_hash)
+
+            if os.path.exists(cache_file):
+                raise Exception(f"Duplicate {method_upper} request detected: {url} with params {params} and data {data or json_data}")
+
+            logger.info(f"通常のリクエストを行います1...")
+            time.sleep(20)
+            # リクエストを実行
+            response = super().request(method, url, *args, **kwargs)
+
+            # ハッシュをキャッシュに保存
+            with open(cache_file, 'w') as f:
+                f.write('processed')
+            logger.info(f"Cached {method_upper} request: {url} with params {params} and data {data or json_data}")
+
+            return response
+        else:
+            logger.info(f"通常のリクエストを行います2...")
+            time.sleep(20)
+            return super().request(method, url, *args, **kwargs)
 
 
 
@@ -705,10 +803,10 @@ def display_images_in_single_row(files):
 
 from urllib.parse import urlparse
 
-
 class YahooAuctionTrade:
     def __init__(self, account, config_file="auction_config.yml"):
-        self.__config, self.__yaml = load_config(config_file)
+        self.config_file = config_file
+        self.__config, self.__yaml = load_config(self.config_file)
         self.__account = account
         self.account_config = self.__config["accounts"][account]
         initial_cookies = parse_cookie_string(self.account_config["cookies"])
@@ -716,7 +814,7 @@ class YahooAuctionTrade:
         self.description_rte = convert_to_div_based_html(self.account_config["description"])
         assert all([tag in self.__config for tag in self.tags]), "タグが一致しません"
 
-        self.session = requests.Session()
+        self.session = SafeSession()
         self.session.cookies.update(initial_cookies)
         self.session.max_redirects = 2
         self._temp_cookies = self.session.cookies.copy()
@@ -729,7 +827,7 @@ class YahooAuctionTrade:
         """
         リクエスト後に実行されるコールバック処理。
         """
-        logger.info(f"request: {response.status_code} {response.request.method} {urlparse(response.url).netloc}{urlparse(response.url).path}")
+        logger.info(f"request: {response.status_code} {response.request.method} {response.url.replace('https://','')}")
 
         response.raise_for_status()
 
@@ -747,7 +845,7 @@ class YahooAuctionTrade:
         if self.is_cookie_updated():
             logger.info("update cookie")
             self.__config["accounts"][self.__account]["cookies"] = serialize_cookies(self.session.cookies)
-            save_config("config.yml", self.__config, self.__yaml)
+            save_config(self.config_file, self.__config, self.__yaml)
             self._temp_cookies = self.session.cookies.copy()
             logger.info(f"is_cookie_updated: {self.is_cookie_updated()}")
 
@@ -1073,7 +1171,6 @@ class YahooAuctionTrade:
         }
         
         # GETリクエスト
-        logger.info(f"get status {url}")
         response = self.session.get(url, headers=headers, allow_redirects=True)
         assert response.status_code == 200, f"{response.status_code, response.text, response.headers}"
         
@@ -1588,7 +1685,10 @@ class YahooAuctionTrade:
         # まとめ取引の画像を集約
         # df2をコピーしてdf3を作成
         df3 = df2.copy()
-        
+        if len(df3) == 0:
+            logger.info("全て発送済みです。処理をスキップします。")
+            return  # または適切なデフォルト値を返す
+
         # is_matomeがTrueの場合のみ、get_matome_imgidsを呼び出し、結果を適切に処理
         def process_row(row):
             if row["is_matome"]:
@@ -1767,6 +1867,7 @@ class YahooAuctionTrade:
         df = df.sort_values("取扱日")
         # df.dropna(subset=['決済金額',"売上"], inplace=True)
         df["account"] = self.__account
+        df["取扱日"] = pd.to_datetime(df["取扱日"]).dt.tz_localize("Asia/Tokyo")
         return df
 
     def _listing_safe(self, file_paths, processed_file="processed_hashes.txt"):
@@ -1874,7 +1975,6 @@ def register_db(client, df):
     if len(df) == 0:
         logger.error("売上データがありません")
         return
-
     for index, row in df.iterrows():
         tags = {
             "product_id": index,  # 商品IDをタグとして設定
@@ -1887,5 +1987,5 @@ def register_db(client, df):
         }
         timestamp = pd.to_datetime(row["取扱日"])
         response = client.write("sales_test", fields, tags, timestamp)
-        logger.info(f"{len(df)} 件の売上データを登録しました")
-        return response
+    logger.info(f"{len(df)} 件の売上データを登録しました")
+    return response

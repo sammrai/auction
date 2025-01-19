@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from email.message import Message
 from typing import List, Optional
+import fcntl
 
 def safe_decode(value):
     """安全にデコードする関数"""
@@ -291,11 +292,16 @@ class IMAPNewMailCheckerByUID:
         if max_uid_in_batch > self.last_uid:
             self.last_uid = max_uid_in_batch
 
+
     def run(self, include_last_n=0):
-        """
-        登録されたすべてのコールバックを処理する。
-        :param include_last_n: 初回に含める最後のN件のメールを含める
-        """
+        """ロックを取得してから実行する。"""
+        lock_file_path = '/tmp/mail_checker.lock'  # ロックファイルのパス
+        lock_file = open(lock_file_path, 'w')
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)  # ロックを取得
+        except IOError:
+            raise Exception("Another instance is already running.")
+
         self.connect()
         if not self.mail:
             return
@@ -318,3 +324,5 @@ class IMAPNewMailCheckerByUID:
             pass
         finally:
             self.close()
+            fcntl.flock(lock_file, fcntl.LOCK_UN)  # ロックを解放
+            lock_file.close()
