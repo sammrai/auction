@@ -338,7 +338,7 @@ class ForgeAPI:
                 f"extensions: {len(self.extensions)}"
              )
 
-    
+    # fetch_civitai_model_by_name
     def civitai2forge_param(self, filename):
         models, embeddings, loras = self.models, self.embeddings, self.loras
         meta = get_meta(filename)[1]
@@ -459,15 +459,15 @@ class ForgeAPI:
 
     def _gen(self, _data, options,
             lora_options={},
-            dpi=50,
+            dpi=200,
             output_dir="./data/generated",
             delete_dir="./data/generated/dev",
             exif={},
-            show_image=False,
-            hr=False,
+            show=False,
+            hr=None,
             aspect="v",
             adetailer="person",
-            enable_masking=False,
+            enable_masking=None,
         ):
         """
         入力データに基づいて画像を生成し、表示および保存します。
@@ -512,7 +512,8 @@ class ForgeAPI:
 
         # プロンプトにLoRAオプションを追加
         data.update(_data)
-        data["enable_hr"] = hr
+        if hr is not None:
+            data["enable_hr"] = hr
 
         # LoRAオプションの文字列化
         lora_str = ", " + ", ".join([f"<lora:{k}:{v}>" for k, v in lora_options.items()])
@@ -560,7 +561,7 @@ class ForgeAPI:
             
             # もしマスキング有効無効と、推定結果の有無に齟齬がある場合は、ngをつける。そうでないときは何もつけない
             # 成人向け画像に、健全画像が混ざることを防ぎ、逆に健全画像にはマスキングがかかっていないことを保証する
-            if enable_masking != (len(predictions) >= 1):
+            if enable_masking is not None and enable_masking != (len(predictions) >= 1):
                 prefix = "ng_"
                 output_dir = delete_dir
             else:
@@ -575,7 +576,7 @@ class ForgeAPI:
             save_labeled_image(file_path, labeled_file_path, predictions)
 
         # 画像を横に並べて表示
-        if show_image:
+        if show:
             show_images(images, dpi=dpi)
         
         return response
