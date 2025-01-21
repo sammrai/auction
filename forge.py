@@ -196,6 +196,7 @@ class ForgeAPI:
             self.load_openapi(openapi_path)
         self.wait_until_startup()
         self.nude_detector = NudeDetector("models/640m.onnx")
+        self.reload_models()
 
     def _request(self, method, endpoint, **kwargs):
         """
@@ -582,6 +583,41 @@ class ForgeAPI:
         return response
     
     import random
+
+    def sampling_from_img(self, filename, gen_prompt=False, seed=None, num=1, dev=False):
+        env = filename.split("/")[3]
+        is_adult={
+            "a": True,
+            "b": False,
+            "c": True,
+            "d": True,
+            "dev": None
+        }
+
+        assert env in is_adult.keys(), env
+
+        for i in range(num):
+            data, options, loras,prompt_spec = self.img2param(filename)
+            if seed:
+                data["seed"]=-1
+            # data["prompt"] += ("("+random.choice(["ass focus", "hip focus", "back focus", "thigh focus", "foot focus"])+")"+ ",big bulge, pants boner")
+            # data["height"], data["width"] = data["width"], data["height"]
+            if gen_prompt:
+                data["prompt"] = generate_prompt(prompt_spec)
+            if dev:
+                data["enable_hr"] = False
+                data["alwayson_scripts"] = {}
+                env = "dev"
+
+            ret = self.gen(data,
+                    options, 
+                    loras,
+                    enable_masking=is_adult[env],
+                    output_dir = f"./data/generated/{env}",
+                    exif={"prompt_spec": prompt_spec}
+            )
+            return ret
+            
 
 import time
 import signal

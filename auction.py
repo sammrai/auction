@@ -413,16 +413,18 @@ def get_original_files(pattern="data/items/*/*.jpg"):
     # 更新日時でソート
     return sorted(original_files, key=os.path.getmtime, reverse=True)
 
-def get_original_files_with_tags(tags, base_pattern="data/items/{}/*.jpg", suffix="sample"):
+
+def get_original_files_with_tags(tags, base_pattern="data/items/{}/*.jpg", suffix="sample", drop_missing=False):
     """
     元画像のみを取得し、更新日時が早い順にソート
     :param tags: マッチさせたいタグのリスト (例: ["a", "b"])
     :param base_pattern: ベースとなるパターン (デフォルトは "data/items/{}/**/*.jpg")
+    :param drop_missing: Trueの場合、存在しないファイルやパスを除外する
     """
     if suffix != "":
         suffix = f"_{suffix}"
 
-    assert isinstance(tags, list), tags
+    assert isinstance(tags, list), f"tags must be a list, got {type(tags).__name__}: {tags}"
     files = []
     for tag in tags:
         # 各タグごとにパターンを生成してマッチするファイルを取得
@@ -431,14 +433,24 @@ def get_original_files_with_tags(tags, base_pattern="data/items/{}/*.jpg", suffi
     
     # フィルタリング
     original_files = [file for file in files if re.match(FILE_REGEX, file)]
-    # print(original_files)
     # 更新日時でソートして返す
     files = sorted(original_files, key=os.path.getmtime, reverse=True)  # reverse=Trueで新しい順にソート
     file_paths = [f"{file_path.rsplit('.', 1)[0]}{suffix}.jpg" for file_path in files]
-    assert all([os.path.exists(f) for f in files]), files
-    assert all([os.path.exists(f) for f in file_paths]), file_paths
+    
+    # 存在しないファイルやパスを確認
+    missing_files = [f for f in files if not os.path.exists(f)]
+    missing_paths = [f for f in file_paths if not os.path.exists(f)]
+    
+    if drop_missing:
+        # 存在するファイルとパスのみを保持
+        files = [f for f in files if f not in missing_files]
+        file_paths = [f for f in file_paths if f not in missing_paths]
+    else:
+        # エラーを出力
+        assert not missing_files, f"The following files do not exist: {missing_files}"
+        assert not missing_paths, f"The following paths do not exist: {missing_paths}"
+    
     return file_paths
-
 
 def get_hash(file_path):
     pattern = r"[a-z]+_[0-9a-f]{6}"
@@ -827,7 +839,7 @@ class YahooAuctionTrade:
 
         # ステータスコードごとの処理
         if response.status_code < 300:
-            time.sleep(20)
+            time.sleep(15)
         else:
             pass
         self.cookie_update()
@@ -1956,7 +1968,7 @@ def display_resized_images_horizontally(files, max_images_per_row=5):
         img = Image.open(file)
         axes[idx].imshow(img)
         axes[idx].axis('off')  # 軸を非表示
-        axes[idx].set_title(file, fontsize=8)  # 小さいフォントでタイトルを設定
+        axes[idx].set_title(os.path.basename(file), fontsize=8)  # 小さいフォントでタイトルを設定
     
     # 余分な空のサブプロットを非表示にする
     for idx in range(num_images, len(axes)):

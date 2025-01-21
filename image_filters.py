@@ -924,8 +924,12 @@ def process_images(file_list, override=False):
         # 画像をロード
 
         try:
-            image = MyImage(file_path, padding=3)
-            
+            label_colors = {
+                "1": (0, 255, 0, 255),    # 男性器
+                "5": (0, 0, 255, 255),   # 女性器
+            }
+
+            image = MyImage(file_path, padding=0, label_colors=label_colors)
             # フィルタを順に適用して保存
             image.apply_filter(FanzaMosaicFilter(mosaic_size_ratio=0.003, resample_method=PILImage.BOX)) \
                 .save("submission")
@@ -935,6 +939,7 @@ def process_images(file_list, override=False):
             #      .apply_filter(WatermarkFilter(size=10)) \
             #      .apply_filter(ResizeFilter(500)) \
             #      .save("sample")
+            image = MyImage(file_path, padding=3)
             image.apply_filter(WhiteFillRotatedRectExpandedFilter(expand_px=80)) \
                 .apply_filter(WatermarkFilter(size=10)) \
                 .apply_filter(ResizeFilter(500)) \

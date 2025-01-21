@@ -295,7 +295,7 @@ class IMAPNewMailCheckerByUID:
 
     def run(self, include_last_n=0):
         """ロックを取得してから実行する。"""
-        lock_file_path = '/tmp/mail_checker.lock'  # ロックファイルのパス
+        lock_file_path = f'/tmp/{self.email_address}.lock'
         lock_file = open(lock_file_path, 'w')
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)  # ロックを取得
