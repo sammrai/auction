@@ -570,7 +570,7 @@ def remove(id_to_remove, hash_file_path="processed_hashes.txt"):
 # remove("a_fbcecf")
 
 
-productname_to_imgid = lambda x: re.search(r'[a-zA-Z]_[a-zA-Z0-9]{6}', x).group() if re.search(r'[a-zA-Z]_[a-zA-Z0-9]{6}', x) else None
+productname_to_imgid = lambda x: re.search(r'[a-z]+_[a-z0-9]{6}', x).group() if re.search(r'[a-z]+_[a-z0-9]{6}', x) else None
 
 # def get_table(cookies, url, index_col=0, table_class='ItemTable', referer='https://auctions.yahoo.co.jp/user/jp/show/mystatus',):
 
@@ -1745,10 +1745,16 @@ class YahooAuctionTrade:
         aggregated['img_paths'] = aggregated['imgid_list'].apply(
             lambda imgids: [f"./data/items/{i.split('_')[0]}/{i}_submission.jpg" for i in imgids]
         )
+        # どのパスが存在しないか確認するコードを追加
+        missing_paths = aggregated['img_paths'].apply(
+            lambda paths: [path for path in paths if not os.path.exists(path)]
+        )
         aggregated['valid_paths'] = aggregated['img_paths'].apply(
             lambda paths: all(os.path.exists(path) for path in paths)
         )
-        assert aggregated['valid_paths'].all(), "一部の画像パスが存在しません。"
+
+        # エラー時に詳細情報を出力
+        assert aggregated['valid_paths'].all(), f"以下の画像パスが存在しません:\n{missing_paths[~aggregated['valid_paths']]}"
         aggregated['num_gift_images'] = aggregated['total_price'].apply(
             lambda total_price: total_price//2500
         )
@@ -1875,6 +1881,8 @@ class YahooAuctionTrade:
         # df.dropna(subset=['決済金額',"売上"], inplace=True)
         df["account"] = self.__account
         df["取扱日"] = pd.to_datetime(df["取扱日"]).dt.tz_localize("Asia/Tokyo")
+        df["決済金額"] = df["決済金額"].fillna(0)
+        df["落札システム利用料"] = df["落札システム利用料"].fillna(0)
         return df
 
     def _listing_safe(self, file_paths, processed_file="processed_hashes.txt"):
@@ -1993,6 +2001,6 @@ def register_db(client, df):
             "system_fee": row["落札システム利用料"],  # 落札システム利用料
         }
         timestamp = pd.to_datetime(row["取扱日"])
-        response = client.write("sales_test", fields, tags, timestamp)
+        response = client.write("sales_test2", fields, tags, timestamp)
     logger.info(f"{len(df)} 件の売上データを登録しました")
     return response
