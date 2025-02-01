@@ -28,6 +28,13 @@ import itertools
 import random
 from collections import Counter
 import traceback
+from tenacity import retry, stop_after_attempt, wait_fixed
+import html5lib
+
+# リトライデコレーターの設定
+@retry(stop=stop_after_attempt(2), wait=wait_fixed(10))
+def retry_request(func, *args, **kwargs):
+    return func(*args, **kwargs)
 
 
 class SafeSession(requests.Session):
@@ -119,9 +126,7 @@ class SafeSession(requests.Session):
 
             return response
         else:
-            return super().request(method, url, *args, **kwargs)
-
-
+            return retry_request(super().request, method, url, *args, **kwargs)
 
 
 def initialize_logger(enable_stdout=True, log_file="auction.log"):
@@ -850,6 +855,7 @@ class YahooAuctionTrade:
     def cookie_update(self):
         if self.is_cookie_updated():
             logger.info("update cookie")
+            self.__config, self.__yaml = load_config(self.config_file)
             self.__config["accounts"][self.__account]["cookies"] = serialize_cookies(self.session.cookies)
             save_config(self.config_file, self.__config, self.__yaml)
             self._temp_cookies = self.session.cookies.copy()
@@ -1898,8 +1904,10 @@ class YahooAuctionTrade:
         except Exception as e:
             logger.error("出品中に例外が発生しました:\n" + traceback.format_exc())
 
-    def listing_auto(self):
-        num = self.account_config["listing_num"]
+    def listing_auto(self, num=None):
+        if num is None:
+            num = self.account_config["listing_num"]
+    
         logger.info(f"自動出品処理開始: {num} 件")
         file_paths = get_original_files_with_tags(self.tags)
         file_paths = get_file_exclude(file_paths, (get_purchased()|get_listed()))

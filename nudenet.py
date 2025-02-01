@@ -241,7 +241,7 @@ class NudeDetector:
 
         return detections
 
-    def detect_specific_classes(self, image_path: str, target_classes=[NudeLabels.ANUS_EXPOSED, NudeLabels.MALE_GENITALIA_EXPOSED]):
+    def detect_specific_classes(self, image_path: str, target_classes=[NudeLabels.ANUS_EXPOSED, NudeLabels.MALE_GENITALIA_EXPOSED, NudeLabels.FEMALE_GENITALIA_EXPOSED]):
         """
         特定のクラスに絞って検出を行うラッパー関数。
 

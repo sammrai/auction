@@ -123,6 +123,8 @@ class SSHClient:
                     pkey=pkey,
                     timeout=self.timeout
                 )
+                self.client.get_transport().set_keepalive(10)
+
                 # 接続に成功したらループを抜ける
                 print(f"Successfully connected to {self.host}")
                 break

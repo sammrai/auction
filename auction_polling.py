@@ -28,18 +28,18 @@ checker = IMAPNewMailCheckerByUID(
     mailbox="yahoo_auction_callback",
 )
 
-def on_test(mail_msg):
-    logger.info(f"{account} ==== テスト ====")
-    logger.info(f"{account} UID: {mail_msg.uid}")
-    logger.info(f"{account} 件名: {mail_msg.subject}")
-    logger.info(f"{account} date: {mail_msg.date}")
-    logger.info(f"{account} test start")
-    time.sleep(10)
-    logger.info(f"{account} test complete")
+# def on_test(mail_msg):
+#     logger.info(f"{account} ==== テスト ====")
+#     logger.info(f"{account} UID: {mail_msg.uid}")
+#     logger.info(f"{account} 件名: {mail_msg.subject}")
+#     logger.info(f"{account} date: {mail_msg.date}")
+#     logger.info(f"{account} test start")
+#     time.sleep(10)
+#     logger.info(f"{account} test complete")
 
-checker.register_callback(
-    callback=on_test
-)
+# checker.register_callback(
+#     callback=on_test
+# )
 
 def on_filter_matched_auction(mail_msg):
     logger.info(f"{account} ==== 支払い完了 ====")

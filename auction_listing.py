@@ -34,3 +34,5 @@ if __name__ == "__main__":
             time.sleep(1)
     finally:
         lock_file.close()  # スクリプト終了時にロック解除
+
+# PYTHONPATH=. nohup python lib/auction_listing.py  shunn_wanda yeqzz34475 &
