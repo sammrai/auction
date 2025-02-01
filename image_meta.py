@@ -11,10 +11,14 @@ from lib.civitai_query import fetch_civitai_models
 def extract_metadata(image_path):
     try:
         img = Image.open(image_path)
-        exif_data = piexif.load(img.info.get("exif"))
-        raw_data = exif_data.get("Exif", {}).get(piexif.ExifIFD.UserComment)
-        cleaned_data = raw_data.replace(b'\x00', b'')
-        decoded_data = cleaned_data.decode('utf-8', errors='replace')
+        info = img.info
+        if "exif" in info:
+            exif_data = piexif.load(info.get("exif"))
+            raw_data = exif_data.get("Exif", {}).get(piexif.ExifIFD.UserComment)
+            cleaned_data = raw_data.replace(b'\x00', b'')
+            decoded_data = cleaned_data.decode('utf-8', errors='replace')
+        else:
+            decoded_data = info["parameters"]
         json_str = decoded_data.replace('UNICODE', '', 1)
         parsed_data = json.loads(json_str)
         if "extraMetadata" in parsed_data:
@@ -59,7 +63,7 @@ def extract_metadata(image_path):
             return parsed_data
         except Exception as inner_e:
             # さらにエラーが発生した場合は詳細なエラーメッセージを出力
-            raise ValueError(f"メタデータの解析中にエラーが発生しました: {inner_e}") from e
+            raise ValueError(f"メタデータの解析中にエラーが発生しました: {inner_e} {decoded_data}") from e
 
 
 def parse_raw_text_to_dict(text: str) -> dict:
@@ -155,6 +159,38 @@ def fetch_civitai_model_by_name(query: str) -> dict:
         return {}
     # Return the first match
     return matched_models[0]
+
+
+def get_modelspec(model_name, type_=None):
+    try:
+        model = fetch_civitai_model_by_name(model_name)
+    
+        # 許可されたタイプと読み替えリストを定義
+        type_mapping = {
+            "textualinversion": "embed",
+            "checkpoint": "checkpoint",
+            "vae": "vae",
+            "lora": "lora"
+        }
+    
+        keys_to_extract = ["id", "type", "name"]
+    
+        # 必要なキーを抽出し、Noneチェック
+        model = {key: model[key] for key in keys_to_extract if model.get(key) is not None}
+        assert len(model) == len(keys_to_extract), f"Some keys have None values: {model}"
+        # id を int 型に変換
+        model["id"] = int(model["id"])
+    
+        # type を読み替え
+        model["type"] = type_mapping.get(model["type"].lower(), None)
+        assert model["type"] is not None, model
+        if type_ is not None:
+            assert model["type"] == type_, f"Invalid type: {model['type']}. Expected: {type_}"
+        
+        assert model["type"], f"Invalid type: {model['type']}. Allowed types: {list(type_mapping.keys())} {model}"
+        return {"model_id": model["id"], "model_type": model["type"], "name": model["name"]}
+    except:
+        return None
 
 
 
