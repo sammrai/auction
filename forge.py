@@ -176,7 +176,7 @@ import inflection
 
 
 class ForgeAPI:
-    def __init__(self, base_url, client_id, client_secret, openapi_path="lib/openapi.json", forge_instance=None):
+    def __init__(self, base_url, client_id, client_secret, openapi_path="lib/openapi.json"):
         """
         Forge APIクラスの初期化
         :param base_url: Forge APIのベースURL
@@ -197,7 +197,6 @@ class ForgeAPI:
         self.upscalers = [None]
         self.loras = [None]
         self.extensions = [None]
-        self.forge_instance = forge_instance
         if openapi_path:
             self.load_openapi(openapi_path)
         self.wait_until_startup()
@@ -217,6 +216,7 @@ class ForgeAPI:
         if response.status_code >= 400:
             raise requests.HTTPError(f"{response.status_code} {response.reason}: {response.text}")
 
+        if response.text == "": return None
         try:
             return response.json()
         except ValueError as e:
@@ -230,6 +230,11 @@ class ForgeAPI:
             return self._request("POST", f"civitdl/models/{model_id}/versions/{version_id}")
         else:
             return self._request("POST", f"civitdl/models/{model_id}")
+
+    def civitdl(self, model_id, download_callback=None):
+        self.civitdl_post_models(model_id)
+        if download_callback:
+            download_callback()
 
     def load_openapi(self, openapi_path):
         """
@@ -355,16 +360,15 @@ class ForgeAPI:
              )
 
     # fetch_civitai_model_by_name
-    def civitai2forge_param(self, filename, forge_instance=None):
+    def civitai2forge_param(self, filename):
         def get_checkpoint(resource, download=True):
             checkpoint = [i for i in self.models if resource["modelName"] in i]
             if checkpoint:
                 return checkpoint[0]
             else:
-                if forge_instance is not None and download:
+                if download:
                     spec = get_modelspec(resource["modelName"], type_="checkpoint")
-                    forge_instance.ssh_client.connect()
-                    forge_instance.civitdl(**spec, download_callback=self.reload_models)
+                    self.civitdl(spec["model_id"], download_callback=self.reload_models)
                     # print("## Downloaded checkpoint: ", resource["modelName"])
                     return get_checkpoint(resource, download=False)
                 else:
@@ -380,9 +384,9 @@ class ForgeAPI:
             if lora:
                 return {lora[0]: resource["weight"]}
             else:
-                if forge_instance is not None and download:
+                if download:
                     spec = get_modelspec(resource["modelName"], type_="lora")
-                    forge_instance.civitdl(**spec, download_callback=self.reload_models)
+                    self.civitdl(spec["model_id"], download_callback=self.reload_models)
                     # print("## Downloaded lora: ", resource["modelName"])
                     return get_lora(resource, download=False)
                 else:
@@ -393,9 +397,9 @@ class ForgeAPI:
             if embed:
                 return [embed[0]]
             else:
-                if forge_instance is not None and download:
-                    spec = get_modelspec(resource["modelName"], type_="embed")
-                    forge_instance.civitdl(**spec, download_callback=self.reload_models)
+                if download:
+                    spec = get_modelspec(resource["modelName"], type_="textualinversion")
+                    self.civitdl(spec["model_id"], download_callback=self.reload_models)
                     # print("## Downloaded embed: ", resource["modelName"])
                     return get_embed(resource, download=False)
                 else:
@@ -428,7 +432,8 @@ class ForgeAPI:
             elif resource["type"] == "lora":
                 lora_options.update(get_lora(resource))
             elif resource["type"] == "embed":
-                options["forge_additional_modules"] += get_embed(resource)
+                pass
+            #     options["forge_additional_modules"] += get_embed(resource)
             else:
                 print("## not support type: ", resource["type"], resource["modelName"])
         options["CLIP_stop_at_last_layers"] = meta["model"]['Clip skip']
@@ -441,7 +446,7 @@ class ForgeAPI:
         
         if "parameters" not in metadata:
             # Civitai画像の場合
-            return self.civitai2forge_param(img_path, forge_instance=self.forge_instance)
+            return self.civitai2forge_param(img_path)
         
         parameters = metadata["parameters"]
         assert "prompt_spec" in metadata, metadata

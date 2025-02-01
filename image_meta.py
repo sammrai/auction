@@ -162,35 +162,27 @@ def fetch_civitai_model_by_name(query: str) -> dict:
 
 
 def get_modelspec(model_name, type_=None):
-    try:
-        model = fetch_civitai_model_by_name(model_name)
+    model = fetch_civitai_model_by_name(model_name)
+    # 許可されたタイプ
+    accept_types = ["textualinversion", "checkpoint", "vae", "lora"]
+    assert type_ in accept_types
+
+    keys_to_extract = ["id", "type", "name"]
+
+    # 必要なキーを抽出し、Noneチェック
+    model = {key: model[key] for key in keys_to_extract if model.get(key) is not None}
+    assert len(model) == len(keys_to_extract), f"Some keys have None values: {model}"
+    assert model["type"] is not None, model
+    assert model["type"] in accept_types, model
+
+    # id を int 型に変換
+    model["id"] = int(model["id"])
+
+    # type を読み替え
+    if type_ is not None:
+        assert model["type"] == type_, f"Invalid type: {model['type']}. Expected: {type_}"
     
-        # 許可されたタイプと読み替えリストを定義
-        type_mapping = {
-            "textualinversion": "embed",
-            "checkpoint": "checkpoint",
-            "vae": "vae",
-            "lora": "lora"
-        }
-    
-        keys_to_extract = ["id", "type", "name"]
-    
-        # 必要なキーを抽出し、Noneチェック
-        model = {key: model[key] for key in keys_to_extract if model.get(key) is not None}
-        assert len(model) == len(keys_to_extract), f"Some keys have None values: {model}"
-        # id を int 型に変換
-        model["id"] = int(model["id"])
-    
-        # type を読み替え
-        model["type"] = type_mapping.get(model["type"].lower(), None)
-        assert model["type"] is not None, model
-        if type_ is not None:
-            assert model["type"] == type_, f"Invalid type: {model['type']}. Expected: {type_}"
-        
-        assert model["type"], f"Invalid type: {model['type']}. Allowed types: {list(type_mapping.keys())} {model}"
-        return {"model_id": model["id"], "model_type": model["type"], "name": model["name"]}
-    except:
-        return None
+    return {"model_id": model["id"], "model_type": model["type"], "name": model["name"]}
 
 
 

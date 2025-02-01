@@ -43,7 +43,7 @@ def fetch_civitai_models(query: str) -> pd.DataFrame:
             "allowCommercialUse": model.get("allowCommercialUse", []),
             "allowDerivatives": model.get("allowDerivatives"),
             "allowDifferentLicense": model.get("allowDifferentLicense"),
-            "type": model.get("type"),
+            "type": model.get("type").lower(),
             "minor": model.get("minor"),
             "poi": model.get("poi"),
             "nsfw": model.get("nsfw"),
