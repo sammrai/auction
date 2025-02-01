@@ -584,39 +584,35 @@ class ForgeAPI:
     
     import random
 
-    def sampling_from_img(self, filename, gen_prompt=False, seed=None, num=1, dev=False):
-        env = filename.split("/")[3]
-        is_adult={
-            "a": True,
-            "b": False,
-            "c": True,
-            "d": True,
-            "dev": None
-        }
-
-        assert env in is_adult.keys(), env
-
-        for i in range(num):
+    def sampling_from_img(self, filename, output_dir="./data/generated/", gen_prompt=False, seed=None, num=1, hr=False, adetailer=False, size=None, remove_words=[], add_prompts=[], enable_masking=None, add_nprompts=[]):
+        for _ in range(num):
             data, options, loras,prompt_spec = self.img2param(filename)
             if seed:
-                data["seed"]=-1
-            # data["prompt"] += ("("+random.choice(["ass focus", "hip focus", "back focus", "thigh focus", "foot focus"])+")"+ ",big bulge, pants boner")
-            # data["height"], data["width"] = data["width"], data["height"]
+                data["seed"]=seed
             if gen_prompt:
                 data["prompt"] = generate_prompt(prompt_spec)
-            if dev:
+
+            for word in remove_words:
+                data["prompt"] = data["prompt"].replace(word,"")
+            data["prompt"] += ","+ " ".join(add_prompts)
+            data["negative_prompt"] += ","+ " ".join(add_nprompts)
+            print(data["prompt"])
+
+            if not hr:
                 data["enable_hr"] = False
+            if not adetailer:
                 data["alwayson_scripts"] = {}
-                env = "dev"
+            if size:
+                data["width"], data["height"] = size
 
             ret = self.gen(data,
                     options, 
                     loras,
-                    enable_masking=is_adult[env],
-                    output_dir = f"./data/generated/{env}",
+                    output_dir = output_dir,
+                    enable_masking = enable_masking,
                     exif={"prompt_spec": prompt_spec}
             )
-            return ret
+        return ret
             
 
 import time
