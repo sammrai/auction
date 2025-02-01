@@ -1,5 +1,5 @@
 from datetime import datetime
-from lib.image_meta import get_meta, extract_metadata
+from lib.image_meta import get_meta, extract_metadata, get_modelspec
 from lib.lambda_cloud import LambdaCloudController
 from lib.ssh_client import SSHClient, convert_to_oneline_echo
 from requests.exceptions import HTTPError
@@ -15,7 +15,7 @@ InteractiveShell.showtraceback = InteractiveShell.showsyntaxerror
 
 
 class ForgeResource:
-    def __init__(self, lambda_cloud_secret, cloudflare_tunnel_token, civitai_token, model_config="./civitdl/models.yml"):
+    def __init__(self, lambda_cloud_secret, cloudflare_tunnel_token, civitai_token, model_config="./civitdl/models.yml", container_name="sdui"):
         self.lambda_cloud_secret = lambda_cloud_secret
         self.cloudflare_tunnel_token = cloudflare_tunnel_token
         self.civitai_token = civitai_token
@@ -28,6 +28,7 @@ class ForgeResource:
         self.instance_price_cents_per_hour = None
         self.exchange_rate = 130  # 為替レート (1ドル = 130円)
         self.downloaded_models = set()  # 追加: ダウンロード済みモデルを追跡
+        self.container_name = container_name
 
     def __enter__(self):
         self._setup_instance()
@@ -65,14 +66,13 @@ class ForgeResource:
         """
         self.ssh_client.cmd(cmd)
 
-    def _download_models(self, model_config):
+    def _restart_forge_container(self):
         cmd = f"""
         cd sd-forge-docker
-        {convert_to_oneline_echo(model_config, "models.yml")}
-        bash -lc './fetch_models.sh models.yml ./data/webui 3'
+        sudo docker compose down
+        sudo docker compose up -d
         """
         self.ssh_client.cmd(cmd)
-
 
     def _teardown_instance(self):
         if self.ssh_client:
@@ -106,7 +106,11 @@ class ForgeResource:
         return round(cost_yen, 2)  # 小数点第2位で丸める
 
     def _all_delete(self):
-        self.lc.delete_all_resources()
+        try:
+            self.lc.delete_all_resources()
+        except:
+            print("Failed to delete all resources")
+            return
 
     def civitdl_parallel(self, models, max_workers=3, force=False):
         self.ssh_client.connect()
@@ -137,7 +141,7 @@ class ForgeResource:
                 # raise しないと以降のコードを止められないので再度送出
                 raise
 
-    def civitdl(self, model_id, model_type, name=None):
+    def civitdl(self, model_id, model_type, name=None, download_callback=None):
         if (model_id, model_type) in self.downloaded_models:
             return model_id, model_type
         valid_model_types = ['lora', 'vae', 'embed', 'checkpoint']
@@ -147,8 +151,10 @@ class ForgeResource:
             raise ValueError(f"Invalid model type: {model_type}. Valid options are: {', '.join(valid_model_types)}.")
         
         # Execute the docker command if model_type is valid
-        ret = self.ssh_client.cmd(f"cd sd-forge-docker && sudo docker compose exec webui civitdl {model_id} @{model_type}")
+        ret = self.ssh_client.cmd(f"cd sd-forge-docker && sudo docker compose exec {self.container_name} civitdl {model_id} @{model_type}")
         self.downloaded_models.add((model_id, model_type))
+        if download_callback:
+            download_callback()
         return model_id, model_type
 
     def install_plugin(self, url):
@@ -158,7 +164,7 @@ class ForgeResource:
         cmd = f"""
         cd sd-forge-docker
         git clone {url} data/extensions/{repo_name} || true
-        sudo docker compose exec -u 0 -w {path} webui pip install .
+        sudo docker compose exec -u 0 -w {path} {self.container_name} pip install .
         """
         self.ssh_client.cmd(cmd)
 
@@ -166,12 +172,11 @@ class ForgeResource:
 import requests
 import json
 import os
-from openapi_spec_validator import validate_spec
 import inflection
 
 
 class ForgeAPI:
-    def __init__(self, base_url, client_id, client_secret, openapi_path="lib/openapi.json"):
+    def __init__(self, base_url, client_id, client_secret, openapi_path="lib/openapi.json", forge_instance=None):
         """
         Forge APIクラスの初期化
         :param base_url: Forge APIのベースURL
@@ -192,6 +197,7 @@ class ForgeAPI:
         self.upscalers = [None]
         self.loras = [None]
         self.extensions = [None]
+        self.forge_instance = forge_instance
         if openapi_path:
             self.load_openapi(openapi_path)
         self.wait_until_startup()
@@ -208,12 +214,22 @@ class ForgeAPI:
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         response = requests.request(method, url, headers=self.headers, **kwargs)
-        response.raise_for_status()  # HTTPステータスエラーをスロー
+        if response.status_code >= 400:
+            raise requests.HTTPError(f"{response.status_code} {response.reason}: {response.text}")
+
         try:
             return response.json()
-        except ValueError:
-            raise RuntimeError("レスポンスをJSONとして解析できませんでした。")
+        except ValueError as e:
+            raise RuntimeError(f"レスポンスをJSONとして解析できませんでした。{response.text}")
 
+    def civitdl_get_models(self):
+        return self._request("GET", f"civitdl/models/")
+
+    def civitdl_post_models(self, model_id, version_id=None):
+        if version_id:
+            return self._request("POST", f"civitdl/models/{model_id}/versions/{version_id}")
+        else:
+            return self._request("POST", f"civitdl/models/{model_id}")
 
     def load_openapi(self, openapi_path):
         """
@@ -227,7 +243,7 @@ class ForgeAPI:
             spec = json.load(f)
 
         # OpenAPI仕様のバリデーション
-        # validate_spec(spec)
+        # (spec)
 
         paths = spec.get("paths", {})
         for path, methods in paths.items():
@@ -328,20 +344,64 @@ class ForgeAPI:
         self.samplers = [i["name"] for i in self.get_sdapi_v1_samplers()]
         self.embeddings = [i["filename"] for i in self.get_sdapi_v1_sd_modules()]
         self.upscalers = [i["name"] for i in self.get_sdapi_v1_upscalers()]
-        self.loras = [{"alias": i["alias"], "path": i["path"]} for i in self.get_sdapi_v1_loras()]
+        self.loras = [{"alias": i["name"], "path": i["path"]} for i in self.get_sdapi_v1_loras()]
         self.extensions = self.get_sdapi_v1_extensions()
         print(f"models: {len(self.models)}",
                 f"embeddings: {len(self.embeddings)}",
                 f"samplers: {len(self.samplers)}",
-                f"embeddings: {len(self.embeddings)}",
                 f"upscalers: {len(self.upscalers)}",
                 f"loras: {len(self.loras)}",
                 f"extensions: {len(self.extensions)}"
              )
 
     # fetch_civitai_model_by_name
-    def civitai2forge_param(self, filename):
-        models, embeddings, loras = self.models, self.embeddings, self.loras
+    def civitai2forge_param(self, filename, forge_instance=None):
+        def get_checkpoint(resource, download=True):
+            checkpoint = [i for i in self.models if resource["modelName"] in i]
+            if checkpoint:
+                return checkpoint[0]
+            else:
+                if forge_instance is not None and download:
+                    spec = get_modelspec(resource["modelName"], type_="checkpoint")
+                    forge_instance.ssh_client.connect()
+                    forge_instance.civitdl(**spec, download_callback=self.reload_models)
+                    # print("## Downloaded checkpoint: ", resource["modelName"])
+                    return get_checkpoint(resource, download=False)
+                else:
+                    print(f"## Not found checkpoint: \"{resource['modelName']}\"")
+                    if self.models:
+                        print(f"## Use \"{self.models[0]}\" instead.")
+                        return self.models[0]
+                    else:
+                        return None
+
+        def get_lora(resource, download=True):
+            lora = [i["alias"] for i in self.loras if resource["modelName"].replace("|","&").replace("/","&") in i["path"]]
+            if lora:
+                return {lora[0]: resource["weight"]}
+            else:
+                if forge_instance is not None and download:
+                    spec = get_modelspec(resource["modelName"], type_="lora")
+                    forge_instance.civitdl(**spec, download_callback=self.reload_models)
+                    # print("## Downloaded lora: ", resource["modelName"])
+                    return get_lora(resource, download=False)
+                else:
+                    print("## Not found lora: ", resource["modelName"])
+                    return {}
+        def get_embed(resource, download=True):
+            embed = [i for i in self.embeddings if resource["modelName"] in i and resource["modelVersionName"] in i]
+            if embed:
+                return [embed[0]]
+            else:
+                if forge_instance is not None and download:
+                    spec = get_modelspec(resource["modelName"], type_="embed")
+                    forge_instance.civitdl(**spec, download_callback=self.reload_models)
+                    # print("## Downloaded embed: ", resource["modelName"])
+                    return get_embed(resource, download=False)
+                else:
+                    print("## Not found embed: ", resource["modelName"])
+                    return []
+
         meta = get_meta(filename)[1]
         
         data = {
@@ -358,56 +418,44 @@ class ForgeAPI:
             "forge_additional_modules" : []
         }
         lora_options = {}
-        
+
+        assert "Civitai resources" in meta["model"], meta
         for resource in meta["model"]['Civitai resources']:
             # print(resource)
+            # {'type': 'checkpoint', 'modelVersionId': 1295881, 'modelName': 'WAI-ANI-NSFW-PONYXL', 'modelVersionName': 'v13.0'}
             if resource["type"] == "checkpoint":
-                checkpoint = [i for i in models if resource["modelName"] in i]
-                if checkpoint:
-                    checkpoint = checkpoint[0]
-                else:
-                    self.models[0]
-                if checkpoint:
-                    options["sd_model_checkpoint"] = checkpoint
-                else:
-                    print("## not found checkpoint: ", resource["modelName"])
+                options["sd_model_checkpoint"] = get_checkpoint(resource)
             elif resource["type"] == "lora":
-                lora = [i["alias"] for i in loras if resource["modelName"].replace("|","&").replace("/","&") in i["path"]]
-                if lora:
-                    lora_options[lora[0]] = resource["weight"]
-                    # options["forge_additional_modules"].append(lora[0])
-                else:
-                    print("## not found lora: ", resource["modelName"])
+                lora_options.update(get_lora(resource))
             elif resource["type"] == "embed":
-                embed = [i for i in embeddings if resource["modelName"] in i and resource["modelVersionName"] in i]
-                if embed:
-                    options["forge_additional_modules"].append(embed[0])
-                else:
-                    print("## not found embed: ", resource["modelName"])
-                    
+                options["forge_additional_modules"] += get_embed(resource)
             else:
                 print("## not support type: ", resource["type"], resource["modelName"])
         options["CLIP_stop_at_last_layers"] = meta["model"]['Clip skip']
-        
         return data, options, lora_options, []
 
     def img2param(self, img_path):
+        img_path = get_file_path(img_path)
+
         metadata = extract_metadata(img_path)
         
         if "parameters" not in metadata:
             # Civitai画像の場合
-            return self.civitai2forge_param(img_path)
+            return self.civitai2forge_param(img_path, forge_instance=self.forge_instance)
         
         parameters = metadata["parameters"]
-        prompt_spec = metadata.get("prompt_spec", "")
-        options = metadata.get("options", {
-            "sd_model_checkpoint": self.models[0] if self.models else None,
-            "CLIP_stop_at_last_layers": 2,
-        })
+        assert "prompt_spec" in metadata, metadata
+        prompt_spec = metadata["prompt_spec"]
+        if "options" not in metadata:
+            options = {
+                "sd_model_checkpoint": metadata["info"]["sd_model_name"],
+                "CLIP_stop_at_last_layers": metadata["info"]["clip_skip"],
+            }
+        else:
+            options = metadata["options"]
 
         # `sd_model_checkpoint` の正しい参照を確認
-        options["sd_model_checkpoint"] = self._resolve_model_checkpoint(options.get("sd_model_checkpoint", ""))
-        
+        options["sd_model_checkpoint"] = self._resolve_model_checkpoint(options.get("sd_model_checkpoint"))
         # LoRA パラメータの抽出と検証
         prompt, loras = self._extract_and_validate_loras(parameters.get("prompt", ""))
         
@@ -419,6 +467,9 @@ class ForgeAPI:
     def _resolve_model_checkpoint(self, checkpoint):
         if checkpoint in self.models:
             return checkpoint
+        for model in self.models:
+            if checkpoint in model:
+                return model
         
         # ハッシュを除去して一致をチェック
         base_name = re.sub(r" \[.*\]$", "", checkpoint)
@@ -475,6 +526,7 @@ class ForgeAPI:
         data: 画像生成用のデータ（バッチサイズに応じて複数の画像を生成）
         """
         assert aspect in ["v", "h"]
+        assert options["sd_model_checkpoint"], "モデルが指定されていません"
         data = {
             "steps": 20,
             "negative_prompt": "text, lips",
@@ -585,35 +637,89 @@ class ForgeAPI:
     import random
 
     def sampling_from_img(self, filename, output_dir="./data/generated/", gen_prompt=False, seed=None, num=1, hr=False, adetailer=False, size=None, remove_words=[], add_prompts=[], enable_masking=None, add_nprompts=[]):
+        
         for _ in range(num):
-            data, options, loras,prompt_spec = self.img2param(filename)
+            data, options, loras, prompt_spec = self.img2param(filename)
             if seed:
-                data["seed"]=seed
+                data["seed"] = seed
             if gen_prompt:
-                data["prompt"] = generate_prompt(prompt_spec)
+                if prompt_spec == [] or prompt_spec == "":
+                    print("## prompt_spec is empty. cannnot generate prompt. alternative prompt is used.")
+                else:
+                    data["prompt"] = generate_prompt(prompt_spec)
 
+            # remove_words に含まれる単語を削除
             for word in remove_words:
-                data["prompt"] = data["prompt"].replace(word,"")
-            data["prompt"] += ","+ " ".join(add_prompts)
-            data["negative_prompt"] += ","+ " ".join(add_nprompts)
-            print(data["prompt"])
+                data["prompt"] = data["prompt"].replace(word, "")
 
+            if isinstance(add_prompts, list):
+                data["prompt"] += ", " + ", ".join(add_prompts)
+            elif hasattr(add_prompts, "__iter__"):
+                data["prompt"] += ", " + ", ".join([next(add_prompts)])
+            else:
+                raise ValueError("add_prompts はリストまたはイテレータである必要があります。")
+
+            # ネガティブプロンプトを結合
+            data["negative_prompt"] += ", " + ", ".join(add_nprompts)
+
+            # その他の設定
             if not hr:
                 data["enable_hr"] = False
+            else:
+                data["enable_hr"] = True
+
             if not adetailer:
                 data["alwayson_scripts"] = {}
             if size:
                 data["width"], data["height"] = size
 
-            ret = self.gen(data,
-                    options, 
-                    loras,
-                    output_dir = output_dir,
-                    enable_masking = enable_masking,
-                    exif={"prompt_spec": prompt_spec}
+            # 生成処理
+            ret = self.gen(
+                data,
+                options,
+                loras,
+                output_dir=output_dir,
+                enable_masking=enable_masking,
+                exif={"prompt_spec": prompt_spec, "original_filename": filename},
             )
         return ret
-            
+
+
+def get_file_path(input_str: str) -> str:
+    """
+    入力がファイルパスならそのまま返し、URLなら画像をダウンロードして
+    /tmp/に保存し、その保存先のパスを返す。
+
+    :param input_str: ファイルパスまたは画像URL
+    :return: ファイルのパス
+    :raises ValueError: URLのダウンロードに失敗した場合や無効な入力の場合
+    """
+    # ファイルがローカルに存在する場合
+    if os.path.isfile(input_str):
+        return input_str
+
+    # URLの場合、ダウンロードして /tmp/ に保存
+    try:
+        response = requests.get(input_str, stream=True)
+        response.raise_for_status()  # HTTPエラーがあれば例外を発生
+    except requests.exceptions.RequestException:
+        raise ValueError("入力が有効なファイルパスでもURLでもありません。")
+
+    # ファイル名をURLから抽出
+    filename = os.path.basename(input_str)
+    if not filename:  # URLにファイル名がない場合
+        raise ValueError("URLからファイル名を取得できませんでした。")
+
+    # 保存先のパスを作成 (/tmp/ディレクトリ)
+    save_path = os.path.join("/tmp", filename)
+
+    # 画像を保存
+    with open(save_path, "wb") as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            file.write(chunk)
+
+    return save_path
+
 
 import time
 import signal
