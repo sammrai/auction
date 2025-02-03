@@ -50,7 +50,7 @@ def on_filter_matched_auction(mail_msg):
     file_paths = get_original_files_with_tags(yat.tags, suffix="submission", drop_missing=True)
     assert file_paths != 0
     if account == "shunn_wanda":
-        gift_image_candidates = [i for i in get_file_exclude(file_paths) if "items/c" in i]
+        gift_image_candidates = get_file_exclude(file_paths)
         assert len(gift_image_candidates) > 20
     else:
         gift_image_candidates = None

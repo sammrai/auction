@@ -1680,7 +1680,7 @@ class YahooAuctionTrade:
             return False
 
 
-    def ship(self, gift_image_candidates=None):
+    def ship(self, gift_image_candidates=None, gift_threshold=1000):
         # 売却済み一覧
         logger.info(f"発送処理開始")
         trades = self.get_closed_df()
@@ -1762,7 +1762,7 @@ class YahooAuctionTrade:
         # エラー時に詳細情報を出力
         assert aggregated['valid_paths'].all(), f"以下の画像パスが存在しません:\n{missing_paths[~aggregated['valid_paths']]}"
         aggregated['num_gift_images'] = aggregated['total_price'].apply(
-            lambda total_price: total_price//2500
+            lambda total_price: total_price//gift_threshold
         )
 
         aggregated['gift_images'] = aggregated['num_gift_images'].apply(
