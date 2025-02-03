@@ -37,7 +37,7 @@ class ForgeResource:
     def __exit__(self, exc_type, exc_value, traceback):
         self._teardown_instance()
 
-    def _setup_instance(self, is_forge_install=True):
+    def _setup_instance(self):
         self.key, instance = self.lc.launch_instance_wait_auto()
         self.instance = instance[0]
         self.start_time = datetime.now()  # 開始時刻を記録
@@ -51,18 +51,31 @@ class ForgeResource:
         self.ssh_client = SSHClient(**args)
         self.ssh_client.connect()
 
-        if is_forge_install: 
-            print("setting up forge")
-            self._setup_environment()
-
-    def _setup_environment(self):
+    def _setup_forge(self, plugins=[]):
         
         cmd = f"""
         git clone https://github.com/sammrai/sd-forge-docker.git
-        cd sd-forge-docker
-        cp docker-compose-tunnel.yml docker-compose.yml
+        cd sd-forge-docker &&\
+        cp docker-compose-tunnel.yml docker-compose.yml &&\
         echo -e "TUNNEL_TOKEN={self.cloudflare_tunnel_token}\nCIVITAI_TOKEN={self.civitai_token}" > .env
+        """
+        self.ssh_client.cmd(cmd)
+
+        cmd = f"""
+        cd sd-forge-docker &&\
         sudo docker compose up -d
+        """
+        self.ssh_client.cmd(cmd)
+
+        for plugin in plugins:
+            self.install_plugin(plugin)
+        self.restart_sdui()
+
+    def restart_sdui(self):
+        cmd = f"""
+        cd sd-forge-docker
+        sudo docker compose exec sdui apt install -y curl
+        sudo docker compose exec sdui curl -X POST  http://localhost:7680/sdapi/v1/server-restart
         """
         self.ssh_client.cmd(cmd)
 
@@ -231,10 +244,11 @@ class ForgeAPI:
         else:
             return self._request("POST", f"civitdl/models/{model_id}")
 
-    def civitdl(self, model_id, download_callback=None):
-        self.civitdl_post_models(model_id)
+    def civitdl(self, model_id, version_id=None, download_callback=None):
+        ret = self.civitdl_post_models(model_id, version_id)
         if download_callback:
             download_callback()
+        return ret
 
     def load_openapi(self, openapi_path):
         """
@@ -340,34 +354,41 @@ class ForgeAPI:
         self.wait_until_startup()
 
     def reload_models(self):
-        self.post_sdapi_v1_reload_checkpoint()
+        # self.post_sdapi_v1_reload_checkpoint()
         self.post_sdapi_v1_refresh_checkpoints()
         self.post_sdapi_v1_refresh_loras()
-        self.post_sdapi_v1_refresh_vae()
-        self.post_sdapi_v1_refresh_embeddings()
-        self.models = [i["title"].replace(".tmp/","") for i in self.get_sdapi_v1_sd_models()]
-        self.samplers = [i["name"] for i in self.get_sdapi_v1_samplers()]
-        self.embeddings = [i["filename"] for i in self.get_sdapi_v1_sd_modules()]
-        self.upscalers = [i["name"] for i in self.get_sdapi_v1_upscalers()]
-        self.loras = [{"alias": i["name"], "path": i["path"]} for i in self.get_sdapi_v1_loras()]
+        # self.post_sdapi_v1_refresh_vae()
+        # self.post_sdapi_v1_refresh_embeddings()
+
+        self.models = [
+            {"alias": os.path.splitext(os.path.basename(i["filename"]))[0], "path": i["filename"]}
+            for i in self.get_sdapi_v1_sd_models()
+        ]
+        self.model_alias = [i["alias"] for i in self.models]
+        # self.samplers = [i["name"] for i in self.get_sdapi_v1_samplers()]
+        # self.embeddings = [i["filename"] for i in self.get_sdapi_v1_sd_modules()]
+        # self.upscalers = [i["name"] for i in self.get_sdapi_v1_upscalers()]
+        self.loras = [{"_alias": i["alias"], "alias": i["name"], "path": i["path"]} for i in self.get_sdapi_v1_loras()]
         self.extensions = self.get_sdapi_v1_extensions()
-        print(f"models: {len(self.models)}",
-                f"embeddings: {len(self.embeddings)}",
-                f"samplers: {len(self.samplers)}",
-                f"upscalers: {len(self.upscalers)}",
-                f"loras: {len(self.loras)}",
-                f"extensions: {len(self.extensions)}"
-             )
+        print(
+            f"models: {len(self.models)},",
+            # f"embeddings: {len(self.embeddings)},",
+            # f"samplers: {len(self.samplers)},",
+            # f"upscalers: {len(self.upscalers)},",
+            f"loras: {len(self.loras)},",
+            f"extensions: {len(self.extensions)}"
+        )
 
     # fetch_civitai_model_by_name
     def civitai2forge_param(self, filename):
         def get_checkpoint(resource, download=True):
-            checkpoint = [i for i in self.models if resource["modelName"] in i]
+            checkpoint = [i["alias"] for i in self.models if resource["modelName"] in i["path"]]
             if checkpoint:
                 return checkpoint[0]
             else:
                 if download:
                     spec = get_modelspec(resource["modelName"], type_="checkpoint")
+                    print(resource["modelName"])
                     self.civitdl(spec["model_id"], download_callback=self.reload_models)
                     # print("## Downloaded checkpoint: ", resource["modelName"])
                     return get_checkpoint(resource, download=False)
@@ -375,7 +396,7 @@ class ForgeAPI:
                     print(f"## Not found checkpoint: \"{resource['modelName']}\"")
                     if self.models:
                         print(f"## Use \"{self.models[0]}\" instead.")
-                        return self.models[0]
+                        return self.models[0]["alias"]
                     else:
                         return None
 
@@ -441,16 +462,13 @@ class ForgeAPI:
 
     def img2param(self, img_path):
         img_path = get_file_path(img_path)
-
         metadata = extract_metadata(img_path)
-        
         if "parameters" not in metadata:
-            # Civitai画像の場合
             return self.civitai2forge_param(img_path)
-        
+
         parameters = metadata["parameters"]
-        assert "prompt_spec" in metadata, metadata
         prompt_spec = metadata["prompt_spec"]
+
         if "options" not in metadata:
             options = {
                 "sd_model_checkpoint": metadata["info"]["sd_model_name"],
@@ -459,34 +477,31 @@ class ForgeAPI:
         else:
             options = metadata["options"]
 
-        # `sd_model_checkpoint` の正しい参照を確認
-        options["sd_model_checkpoint"] = self._resolve_model_checkpoint(options.get("sd_model_checkpoint"))
-        # LoRA パラメータの抽出と検証
-        prompt, loras = self._extract_and_validate_loras(parameters.get("prompt", ""))
-        
+        options["sd_model_checkpoint"] = self._download_or_get_checkpoint(options.get("sd_model_checkpoint"))
+        prompt, loras = self._download_or_get_loras(parameters.get("prompt", ""))
         parameters["prompt"] = prompt
         parameters["seed"] = metadata["info"].get("seed")
-        
+
         return parameters, options, loras, prompt_spec
 
-    def _resolve_model_checkpoint(self, checkpoint):
-        if checkpoint in self.models:
-            return checkpoint
-        for model in self.models:
-            if checkpoint in model:
+    def _download_or_get_checkpoint(self, model_name, download=True):
+        model_name = os.path.basename(model_name)  # ファイル名のみ取得
+        model_name = os.path.splitext(model_name)[0]  # 拡張子を除去
+
+        if model_name in [i["alias"] for i in self.models]:
+            return model_name
+        for model in [i["path"] for i in self.models]:
+            if model_name in model:
                 return model
         
-        # ハッシュを除去して一致をチェック
-        base_name = re.sub(r" \[.*\]$", "", checkpoint)
+        if download:
+            mid, vid = parse_model_string(model_name)
+            ret = self.civitdl(mid, vid, download_callback=self.reload_models)
+            return self._download_or_get_checkpoint(model_name, download=False)
+        else:
+            print(f"警告: モデル '{model_name}' が見つかりません。デフォルトモデル '{self.models[0]}' を使用します。")
+            return self.models[0]["alias"]
         
-        matched_model = next((model for model in self.models if model.startswith(base_name)), None)
-        
-        if not matched_model:
-            print(f"警告: モデル '{checkpoint}' が見つかりません。デフォルトモデル '{self.models[0]}' を使用します。")
-            return self.models[0]
-        
-        return matched_model
-
     @classmethod
     def extract_loras(cls, prompt):
         lora_pattern = r'<lora:([^:]+):([\d.]+)>'
@@ -495,21 +510,42 @@ class ForgeAPI:
         cleaned_prompt = re.sub(lora_pattern, "", prompt).strip(", ")
         return cleaned_prompt, loras
 
-    def _extract_and_validate_loras(self, prompt):
-        cleaned_prompt, loras = self.extract_loras(prompt)
+    def _download_or_get_lora(self, model_name, download=True):
         lora_aliases = {lora["alias"] for lora in self.loras}
-        missing_loras = [name for name in loras if name not in lora_aliases]
+        if model_name in lora_aliases:
+            return model_name
+        if download:
+            mid, vid = parse_model_string(model_name)
+            self.civitdl(mid, vid, download_callback=self.reload_models)
+            return self._download_or_get_lora(model_name, download=False)
+        else:
+            print(f"警告: モデル '{model_name}' が見つかりません。")
+            return None
         
-        if missing_loras:
-            raise ValueError(f"Missing LoRA aliases: {missing_loras}")
+
+    def _download_or_get_loras(self, prompt):
+        m = ModelAliasLookup()
+        cleaned_prompt, loras = self.extract_loras(prompt)
+        parsed = [parse_model_string(lora) for lora in loras]
         
-        return cleaned_prompt, loras
+        if all([i is None for i in parsed]):
+            loras = {m.get_alias(name): weight for name, weight in loras.items()}
+            parsed = [parse_model_string(lora) for lora in loras]
+
+        assert None not in parsed, f"Unexpected None in parsed: {parsed}"
+        
+        ret_loras = {}
+        for lora, weight in loras.items():
+            model_name = self._download_or_get_lora(lora)
+            if model_name is None: continue
+            ret_loras.update({model_name: weight})
+
+        return cleaned_prompt, ret_loras
 
     def gen(self, *args, **kwargs):
         try:
             return self._gen(*args, **kwargs)
         except KeyboardInterrupt:
-            print("処理を中止します")
             self.post_sdapi_v1_interrupt()
             # 元の例外との関連付けを削除
             raise UserWarning("処理を中止しました") from None
@@ -535,12 +571,9 @@ class ForgeAPI:
         data = {
             "steps": 20,
             "negative_prompt": "text, lips",
-        	# "sampler_index":"Euler A",
         	"sampler_index":"DPM++ 2M Karras",
         	"width": 832,
         	"height": 1216,
-        	# "width": 256,
-        	# "height": 384,
         	"cfg_scale": 7,
         	"seed": -1,
             "batch_size": 1,
@@ -552,8 +585,7 @@ class ForgeAPI:
             "denoising_strength":0.5,
             "hr_additional_modules": [],
         }
-        if aspect == "h":
-            data["height"], data["width"] = data["width"], data["height"]
+        if aspect == "h": data["height"], data["width"] = data["width"], data["height"]
 
         if adetailer == "person":
             data["alwayson_scripts"] = adetailer_person
@@ -566,6 +598,12 @@ class ForgeAPI:
         # optionが違う時に送信する
         current_optons = self.get_sdapi_v1_options()
         if not all(current_optons[k] == options[k] for k in current_optons.keys() & options.keys()):
+            print("change options.")
+            model_name = options["sd_model_checkpoint"]
+            if model_name not in self.model_alias:
+                mid, vid = parse_model_string(model_name)
+                self.civitdl(mid, vid)
+                forge.reload_models()
             self.post_sdapi_v1_options(json=options)
 
         # プロンプトにLoRAオプションを追加
@@ -641,10 +679,13 @@ class ForgeAPI:
     
     import random
 
-    def sampling_from_img(self, filename, output_dir="./data/generated/", gen_prompt=False, seed=None, num=1, hr=False, adetailer=False, size=None, remove_words=[], add_prompts=[], enable_masking=None, add_nprompts=[]):
-        
+    def sampling_from_img(self, filename, output_dir="./data/generated/", gen_prompt=False, seed=None, num=1, hr=False, adetailer=False, size=None, remove_words=[], add_prompts=[], enable_masking=None, add_nprompts=[], add_loras={}):
+
         for _ in range(num):
+            if _ != 0 and num!=1 and seed!=-1:
+                raise Exception("same seed!")
             data, options, loras, prompt_spec = self.img2param(filename)
+            loras.update(add_loras)
             if seed:
                 data["seed"] = seed
             if gen_prompt:
@@ -927,13 +968,50 @@ def generate_prompt(design):
 adetailer_face={"ADetailer": {"args": [{"ad_model": "face_yolov8n.pt",}]}}
 adetailer_person={"ADetailer": {"args": [{"ad_model": "person_yolov8s-seg.pt",}]}}
 
-# 使用例
-if __name__ == "__main__":
-    lambda_cloud_secret = "secret_mac-m1_f8dbcd564f2c4500896dc7f31ac2141a.Sq0eBUd5PhHqCSax0447lHJR8ujylk8j"
-    cloudflare_tunnel_token = "eyJhIjoiZWU1YzJhMThmYmQ1OTA5OTQyMDI3NmMzNzA5ZjkyYTYiLCJ0IjoiZWYzNWM3YzYtMjIwNS00MDYwLWEzNzQtNTE3YWVmMzZhYWI5IiwicyI6Ill6azFaak5rTVdVdFpUVm1ZaTAwWmpaakxUa3haamd0TVRBMU5tUTVPVGs0T0dZNCJ9"
-    civitai_token = "d55180e3db1da5b67a75e98cec927fe0"
 
-    with ForgeResource(lambda_cloud_secret, cloudflare_tunnel_token, civitai_token) as forge:
-        print("Forge instance is set up and ready.")
+import yaml
 
-    print("Forge instance is cleaned up.")
+class ModelAliasLookup:
+    def __init__(self, yaml_file="lib/modelspecs.yml", category="lora"):
+        self.model_dict = self._load_yaml(yaml_file)
+        self.category = category
+
+    def _load_yaml(self, yaml_file):
+        """YAML ファイルを読み込んでカテゴリごとの辞書を作成"""
+        with open(yaml_file, "r", encoding="utf-8") as file:
+            data = yaml.safe_load(file)
+        
+        model_dict = {}
+        for category, entries in data.items():
+            model_dict[category] = {entry["_alias"]: entry["alias"] for entry in entries}
+        return model_dict
+
+    def get_alias(self, alias_input):
+        """カテゴリと _alias を指定して alias を取得"""
+        return self.model_dict.get(self.category, {}).get(alias_input, None)
+
+import re
+import os
+
+def parse_model_string(model_string):
+    """
+    指定されたモデル文字列を解析し、モデル名、モデルID、バージョンIDを抽出する。
+    拡張子とディレクトリを除去してから解析を行う。
+
+    Args:
+        model_string (str): パスを含む "<モデル名>-mid_<モデルID>-vid_<バージョンID>.拡張子" の形式の文字列
+
+    Returns:
+        dict: {"model_name": モデル名, "model_id": モデルID, "version_id": バージョンID} または None（フォーマット不一致時）
+    """
+    # ディレクトリと拡張子を除去
+    # model_string = os.path.basename(model_string)  # ファイル名のみ取得
+    # model_string = os.path.splitext(model_string)[0]  # 拡張子を除去
+
+    # パターンマッチング
+    pattern = r"^(?P<model_name>.+?)-mid_(?P<model_id>\d+)-vid_(?P<version_id>\d+)$"
+    match = re.match(pattern, model_string)
+    if match:
+        ret = match.groupdict()
+        return ret["model_id"], ret["version_id"]
+    return None
